@@ -1,0 +1,21 @@
+prompts:
+  # Minimal prompts
+  - "sky"
+  - "a"
+  - "red"
+  # Very long prompts
+  - "a breathtakingly detailed panoramic view of an ancient city built into the side of a massive cliff face overlooking a turquoise ocean with hundreds of tiny boats sailing between towering rock formations while birds circle overhead and the sun sets behind distant mountains casting long golden shadows across the entire landscape and illuminating every intricate architectural detail of the carved stone buildings"
+  - "an extremely complex scene featuring a massive steampunk clockwork mechanism with thousands of interlocking brass gears spinning at different speeds surrounded by jets of steam and sparks of electricity while tiny mechanical birds fly between the moving parts and a network of glass tubes carries glowing liquids throughout the entire contraption"
+  # Special characters
+  - "a scene with 50% opacity and 100% saturation"
+  - "hello & goodbye - a scene of arrivals/departures"
+  - "test: colons, semicolons; and (parentheses) [brackets]"
+  # Repetitive
+  - "water water water water water water water water"
+  - "the the the the the the the the the the"
+  # Numbers and mixed content
+  - "3 cats sitting on 2 chairs next to 1 table"
+  - "1920x1080 resolution test pattern with RGB values"
+  # Unicode
+  - "a beautiful scene with cherry blossoms sakura"
+  - "cafe au lait in a Parisian bistro"
