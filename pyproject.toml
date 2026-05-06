@@ -1,0 +1,34 @@
+[project]
+name = "scope-loadtest"
+version = "0.1.0"
+description = "Load testing harness for Scope cloud inference on the Livepeer network"
+requires-python = ">=3.12"
+dependencies = [
+    "httpx>=0.28.0",
+    "prometheus-client>=0.21.0",
+    "pyyaml>=6.0",
+    "Pillow>=11.0.0",
+    "numpy>=1.26.0",
+    "click>=8.1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24.0",
+    "respx>=0.22.0",
+]
+
+[project.scripts]
+loadtest = "loadtest.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/loadtest"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
