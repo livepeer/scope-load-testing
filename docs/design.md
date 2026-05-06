@@ -1,7 +1,8 @@
 # Scope Cloud Inference Load Testing — Design Spec
 
 **Date:** 2026-05-05
-**Status:** Approved
+**Revised:** 2026-05-06
+**Status:** Approved (v2)
 
 ## 1. Purpose
 
@@ -15,6 +16,36 @@ Build a load testing harness that continuously validates the health, performance
 - Complete each run within 30 minutes, then release all resources
 - Progressively rotate through all orchestrators with fair distribution
 - Report to Grafana in real time, with regression detection and alerting
+
+### 1.1 Extensibility Principle
+
+**Adding a new pipeline requires no code changes — only config.** When Scope adds a new pipeline (e.g., `acestep`), the operator adds an entry to the scenario matrix in `config/default.yaml` and optionally a graph template YAML if the pipeline has novel port names. No Python code is modified.
+
+### 1.2 Prerequisites
+
+**Orchestrator targeting:** The harness must be able to direct a Scope instance to connect to a specific Livepeer orchestrator. This requires one of:
+
+- **Option A (preferred):** Scope's `POST /api/v1/cloud/connect` accepts an `orchestrator_address` parameter that routes the connection to a specific orchestrator, bypassing gateway-level load balancing.
+- **Option B:** The `LIVEPEER_TOKEN` or `app_id` can be constructed to encode a target orchestrator, and the Livepeer gateway respects it.
+- **Option C (fallback):** The harness connects without targeting and records which orchestrator was assigned (from cloud status or connection metadata). Coverage tracking becomes observational rather than directed — the scheduler runs enough sessions to probabilistically cover all orchestrators but cannot guarantee specific targeting.
+
+The implementation should support Option C as the baseline and Option A as an enhancement when available. The scheduler's fair rotation logic works with either: with targeting it assigns orchestrators explicitly; without targeting it tracks observed assignments and adjusts run counts to compensate for uneven distribution.
+
+**Option C executor behavior:** When orchestrator targeting is not available, the executor:
+1. Calls `POST /api/v1/cloud/connect` with `app_id` only (no orchestrator hint).
+2. After connection succeeds, reads `GET /api/v1/cloud/status` and extracts `connection_id` or any orchestrator-identifying metadata.
+3. Passes the observed orchestrator identity back to the coverage tracker.
+4. The scheduler does not pre-assign orchestrators to slots. Instead, it runs sessions and records which orchestrator was reached. If an orchestrator has low observed coverage, the scheduler increases total run count to compensate probabilistically.
+
+### 1.3 Scope — v1 vs v2
+
+Features explicitly deferred to v2:
+
+| Feature | Reason |
+|---------|--------|
+| Recording download and MP4 validation | Low signal — frame validation already proves frames flow. Recording is heavy on bandwidth. |
+| Model consistency (reference frame SSIM across runs) | Requires deterministic seeding, reference frame storage, per-pipeline tuning. Better suited to Scope CI. |
+| Orchestrator routing fairness detection | Requires runner ID visibility not exposed by Scope API. |
 
 ## 2. Architecture
 
@@ -52,9 +83,9 @@ Build a load testing harness that continuously validates the health, performance
 **Key design decisions:**
 
 - **Scope instances are unmodified `daydreamlive/scope` containers** with `CUDA_VISIBLE_DEVICES=""` (no local GPU). They connect to Livepeer for remote inference, exactly like production.
-- **Harness is a separate lightweight container** — depends only on `httpx`, `prometheus_client`, `pyyaml`, `Pillow`, `scikit-image`. Zero ML dependencies.
+- **Harness is a separate lightweight container** — depends only on `httpx`, `prometheus_client`, `pyyaml`, `Pillow`. Zero ML dependencies.
 - **Each Scope instance connects to one orchestrator at a time** — clean 1:1 mapping. After scenarios complete, it disconnects and gets reassigned.
-- **All config is YAML** — scenarios, prompts, schedules, thresholds. No hardcoded values in code.
+- **All config is YAML** — scenario matrix, graph templates, prompts, schedules, thresholds. No hardcoded values in code.
 - **Persistent data volume** (`data/`) — coverage, baselines, history, failure logs survive restarts.
 
 ## 3. Scheduler & Traffic Budget Engine
@@ -81,7 +112,7 @@ budget:
 2. Calculate the run plan for the day:
    - Each orchestrator gets `runs_needed` slots spread across the window.
    - Orchestrators are interleaved — at most N under test simultaneously.
-   - Each slot is assigned a scenario from the pool, rotating to cover all scenarios per orchestrator.
+   - Each slot is assigned a scenario from the generated matrix, rotating to cover all scenarios per orchestrator.
 3. Execute runs by assigning available Scope instances to the next pending slot.
 4. Track completion: if a run fails or is skipped (orchestrator went unhealthy), reschedule in a later slot.
 5. At end of day, log coverage report.
@@ -96,7 +127,7 @@ The scheduler maintains a priority queue sorted by "test debt" — how far behin
 
 ### 3.4 Coverage Persistence
 
-State is persisted to `data/coverage.json` so it survives restarts:
+State is persisted to `data/coverage.json` (pruned to last 30 days on load) so it survives restarts:
 
 ```json
 {
@@ -104,7 +135,7 @@ State is persisted to `data/coverage.json` so it survives restarts:
     "O-abc123": {
       "runs_completed": 7,
       "runs_planned": 10,
-      "scenarios_covered": ["longlive_t2v_short", "ltx2_i2v_mid"],
+      "scenarios_covered": ["longlive_t2v_1m", "ltx2_i2v_5m"],
       "failures": 1,
       "failure_categories": {"runner": 1}
     }
@@ -146,77 +177,95 @@ class Orchestrator:
 
 ## 5. Scenario Definitions
 
-### 5.1 Scenario Format
+### 5.1 Scenario Matrix (config-driven)
 
-Each scenario is a YAML file in `config/scenarios/`:
+Scenarios are generated at runtime from a compact matrix in `config/default.yaml`:
 
 ```yaml
-name: longlive_v2v_mid
-pipeline: longlive
-mode: v2v
-duration_mins: 5
-graph:
-  nodes:
-    - id: input
-      type: source
-      source_mode: video_file
-      source_name: /data/videos/gradient_512x512_30s.mp4
-    - id: longlive
-      type: pipeline
-      pipeline_id: longlive
-    - id: output
-      type: sink
-    - id: record
-      type: record
-  edges:
-    - from: input
-      from_port: video
-      to_node: longlive
-      to_port: video
-      kind: stream
-    - from: longlive
-      from_port: video
-      to_node: output
-      to_port: video
-      kind: stream
-    - from: longlive
-      from_port: video
-      to_node: record
-      to_port: video
-      kind: stream
-prompts:
-  pool: nature
-  switch_interval_s: 30
-parameters:
-  noise_scale: 0.7
-  width: 512
-  height: 512
-validation:
-  min_fps: 6
-  max_first_frame_s: 60
-  frame_check_interval_s: 30
-  check_recording: true
+scenarios:
+  - pipeline: longlive
+    modes: [t2v, v2v, i2v]
+    durations: [1, 5, 15]
+    prompts_pool: nature
+    parameters:
+      width: 512
+      height: 512
+      noise_scale: 0.7
+    source_files:                    # used for v2v and i2v modes
+      v2v: /data/videos/gradient_512x512_30s.mp4
+      i2v: /data/videos/solid_red_512x512_30s.mp4  # single-frame treated as image
+
+  - pipeline: ltx2
+    modes: [t2v, i2v]
+    durations: [1, 5]
+    prompts_pool: nature
+    parameters:
+      width: 512
+      height: 512
+    source_files:
+      i2v: /data/videos/solid_red_512x512_30s.mp4
+
+  - pipeline: longlive+rife
+    modes: [v2v]
+    durations: [5, 15]
+    graph_template: chain_longlive_rife
+    prompts_pool: nature
+    parameters:
+      noise_scale: 0.7
+      width: 512
+      height: 512
+
+  - pipeline: video-depth-anything+longlive+rife
+    modes: [v2v]
+    durations: [5]
+    graph_template: chain_depth_longlive_rife
+    prompts_pool: nature
+    parameters:
+      noise_scale: 0.7
+      width: 512
+      height: 512
 ```
 
-### 5.2 Scenario Matrix
+The scenarios module expands this into the full test matrix at startup. Each entry generates `len(modes) * len(durations)` concrete scenarios. Adding a new pipeline = adding one entry to this list.
 
-| Scenario | Pipeline | Mode | Duration | Graph Type |
-|----------|----------|------|----------|------------|
-| `longlive_t2v_short` | longlive | t2v | 1 min | single |
-| `longlive_t2v_mid` | longlive | t2v | 5 min | single |
-| `longlive_t2v_long` | longlive | t2v | 15 min | single |
-| `longlive_v2v_short` | longlive | v2v | 1 min | single |
-| `longlive_v2v_mid` | longlive | v2v | 5 min | single |
-| `longlive_v2v_long` | longlive | v2v | 15 min | single |
-| `longlive_i2v_short` | longlive | i2v | 1 min | single |
-| `longlive_i2v_mid` | longlive | i2v | 5 min | single |
-| `ltx2_t2v_short` | ltx2 | t2v | 1 min | single |
-| `ltx2_t2v_mid` | ltx2 | t2v | 5 min | single |
-| `ltx2_i2v_short` | ltx2 | i2v | 1 min | single |
-| `ltx2_i2v_mid` | ltx2 | i2v | 5 min | single |
-| `chain_longlive_rife_mid` | longlive+rife | v2v | 5 min | chained |
-| `chain_depth_longlive_rife_mid` | depth+longlive+rife | v2v | 5 min | full chain |
-| `chain_longlive_rife_long` | longlive+rife | v2v | 15 min | chained |
+### 5.2 Graph Templates
+
+Structural graph definitions live in `config/graphs/` — only needed for multi-pipeline chains:
+
+```yaml
+# config/graphs/chain_longlive_rife.yaml
+nodes:
+  - id: input
+    type: source
+    source_mode: video_file
+    source_name: /data/videos/gradient_512x512_30s.mp4
+  - id: longlive
+    type: pipeline
+    pipeline_id: longlive
+  - id: rife
+    type: pipeline
+    pipeline_id: rife
+  - id: output
+    type: sink
+edges:
+  - from: input
+    from_port: video
+    to_node: longlive
+    to_port: video
+    kind: stream
+  - from: longlive
+    from_port: video
+    to_node: rife
+    to_port: video
+    kind: stream
+  - from: rife
+    from_port: video
+    to_node: output
+    to_port: video
+    kind: stream
+```
+
+Single-pipeline scenarios need no graph template — the executor builds the session body directly from `pipeline` + `mode`.
 
 ### 5.3 Prompt Datasets
 
@@ -230,10 +279,30 @@ prompts:
   - "a dense forest with sunlight filtering through trees"
   - "a vast desert with rolling sand dunes at golden hour"
   - "a waterfall cascading into a tropical pool"
-  # ... 20-30 prompts per pool
 ```
 
-Pools: `nature.yaml`, `urban.yaml`, `abstract.yaml`, `stress.yaml` (edge cases: very long prompts, special characters, minimal prompts, empty string).
+Pools: `nature.yaml`, `urban.yaml`, `abstract.yaml`, `stress.yaml` (edge cases: very long prompts, special characters, minimal prompts).
+
+### 5.4 Validation Defaults
+
+Per-scenario validation thresholds come from `config/default.yaml` thresholds section. Scenarios inherit the global defaults; no per-scenario override needed for v1. The full thresholds config:
+
+```yaml
+thresholds:
+  connect_timeout_s: 120
+  pipeline_load_timeout_s: 300
+  first_frame_timeout_s: 60
+  stall_timeout_s: 10
+  min_fps: 6
+  max_vram_percent: 90
+  vram_leak_tolerance_mb: 200
+  prompt_diff_min: 10.0          # mean pixel diff threshold for prompt sensitivity
+  regression_drift_threshold: 0.20
+  frame_variance_min: 5.0
+  frame_check_interval_s: 30
+  prompt_switch_interval_s: 30
+  cold_start_threshold_s: 60     # connect time above this = cold start
+```
 
 ## 6. Executor Lifecycle
 
@@ -255,16 +324,14 @@ executor.run(scope_url, orchestrator_id, scenario, prompt_set)
 ├─ 3. STREAM PHASE (timed, runs for scenario.duration_mins)
 │  ├─ POST /api/v1/session/start {graph or single pipeline config}
 │  ├─ Record: time to first frame (poll /session/metrics until frames_out > 0)
-│  ├─ Start recording: POST /recordings/headless/start?node_id=record
 │  │
 │  ├─ MONITORING LOOP (every frame_check_interval_s):
 │  │  ├─ GET /session/metrics → record fps_in, fps_out, vram
 │  │  ├─ GET /session/frame → validate not black, correct dimensions
 │  │  ├─ If prompt switch due: POST /session/parameters with next prompt
-│  │  │   └─ Capture frame before + after switch → SSIM comparison
+│  │  │   └─ Capture frame before + after switch → pixel diff comparison
 │  │  └─ Check for stalls: fps_out == 0 for > 10s → flag failure
 │  │
-│  ├─ At end of duration: stop recording, download, validate MP4
 │  └─ POST /api/v1/session/stop
 │
 ├─ 4. CLEANUP PHASE
@@ -280,7 +347,7 @@ executor.run(scope_url, orchestrator_id, scenario, prompt_set)
 
 **Hard timeout:** A watchdog enforces `max_run_duration_mins`. If any phase exceeds it, the executor force-stops the session, captures logs, and reports a timeout failure. No run ever exceeds 30 minutes.
 
-**Prompt switching:** The executor picks prompts from the configured pool and rotates them at `switch_interval_s`. This tests that the model responds to prompt changes (SSIM check), measures prompt-to-effect latency, and catches crashes on prompt transitions.
+**Prompt switching:** The executor picks prompts from the configured pool and rotates them at `thresholds.prompt_switch_interval_s` (global config, not per-scenario). This tests that the model responds to prompt changes (pixel diff check), measures prompt-to-effect latency, and catches crashes on prompt transitions.
 
 ## 7. Validation & Quality Checks
 
@@ -300,31 +367,20 @@ On each prompt switch:
 1. Capture frame just before the switch.
 2. Wait ~10s for the model to respond.
 3. Capture frame after.
-4. Compute SSIM between the two frames.
-5. If SSIM > 0.85 → frames are too similar → model isn't responding to prompts → fail.
+4. Compute mean absolute pixel difference between the two frames.
+5. If mean diff < threshold → frames are too similar → model isn't responding to prompts → flag.
 
-### 7.3 Recording Validation
+Uses Pillow + numpy only (no scikit-image dependency).
 
-After each recording download:
-
-1. File size > 0.
-2. Valid MP4 container (can open with OpenCV or ffprobe).
-3. Duration within tolerance (expected +/- 5s).
-4. Frame count > 0.
-
-### 7.4 VRAM Leak Detection
+### 7.3 VRAM Leak Detection
 
 During mid and long sessions (>= 5 min), compare first-quarter average VRAM with last-quarter average. Growth > 200MB → potential leak, flagged in metrics.
-
-### 7.5 Sequential Load/Unload
-
-Test loading longlive, unloading, then loading ltx2 on the same runner. Catches VRAM leaks or cleanup failures between sessions.
 
 ## 8. Regression Detection
 
 ### 8.1 Rolling Baseline
 
-The harness maintains `data/baselines.json` with 7-day rolling statistics per scenario type:
+The harness maintains `data/baselines.json` with 7-day rolling statistics per scenario key (e.g., `longlive_t2v`):
 
 ```json
 {
@@ -339,6 +395,8 @@ The harness maintains `data/baselines.json` with 7-day rolling statistics per sc
 }
 ```
 
+History entries older than 7 days are pruned automatically.
+
 ### 8.2 Drift Detection
 
 After each run, compare against baseline:
@@ -349,17 +407,9 @@ After each run, compare against baseline:
 
 Drift flags are pushed as Prometheus metrics and trigger Grafana alerts.
 
-### 8.3 Model Consistency
+### 8.3 Cold Start vs Warm Start Tracking
 
-For a specific "reference scenario" (fixed prompt, fixed seed), capture a reference frame and store it. On subsequent runs, compare SSIM/PSNR against the stored reference. SSIM < 0.7 flags a potential model version mismatch or weight corruption. Runs once per orchestrator per day.
-
-### 8.4 Cold Start vs Warm Start Tracking
-
-Tag each session as cold or warm based on whether the runner was already provisioned. Track cold start frequency per orchestrator — a sudden spike means machines aren't staying warm.
-
-### 8.5 Orchestrator Routing Fairness
-
-If the same model is requested from the same gateway repeatedly, track whether the same runner is always selected or if requests are round-robined. Detects sticky routing bugs.
+Tag each session as cold or warm based on connect duration: if `connect_duration_s > thresholds.cold_start_threshold_s` (default: 60), it's a cold start. This threshold is configurable in `config/default.yaml` because cold start time varies by runner image size and orchestrator provisioning speed. Track cold start frequency per orchestrator — a sudden spike means machines aren't staying warm.
 
 ## 9. Error Taxonomy
 
@@ -378,33 +428,30 @@ On failure, the harness captures `GET /api/v1/logs/tail?lines=100` and stores it
 
 ### 10.1 Prometheus Metrics
 
-All metrics carry labels: `orchestrator_id`, `pipeline`, `mode`, `scenario`, `duration_class`.
+**Standard labels** on most metrics: `orchestrator_id`, `pipeline`, `mode`.
+**Extended labels** on counters only: add `scenario`, `duration_class` where breakdown is needed.
 
 **Histograms (latency distributions):**
 - `connect_duration_seconds` — cloud connect time
 - `pipeline_load_seconds` — pipeline load time
 - `first_frame_seconds` — prompt to first output frame
-- `prompt_switch_latency_seconds` — time for output to change after prompt update
 
 **Gauges (per-session snapshots):**
 - `stream_fps_out` — output FPS during session
 - `stream_fps_in` — input FPS
 - `vram_allocated_mb` — GPU memory usage on runner
-- `vram_usage_percent` — vram_allocated / vram_total
 - `frames_to_cloud` / `frames_from_cloud` — frame delivery counters
 
 **Counters (cumulative):**
-- `runs_total{result=pass|fail}` — total runs attempted
-- `failures_total{category=network|orchestrator|runner|protocol}` — failures by taxonomy
+- `runs_total{result=pass|fail}` — total runs (extended labels)
+- `failures_total{category=network|orchestrator|runner|protocol}` — failures by taxonomy (extended labels)
 - `frames_validated_total{result=valid|black|corrupt|wrong_size}` — frame checks
-- `recordings_validated_total{result=valid|corrupt|wrong_duration}` — recording checks
-- `prompt_sensitivity_checks_total{result=pass|fail}` — SSIM checks
+- `prompt_sensitivity_checks_total{result=pass|fail}` — prompt diff checks
 
 **Gauges (budget & regression):**
 - `budget_runs_planned` / `budget_runs_completed` — per orchestrator per day
 - `budget_percent_consumed` — daily completion rate
 - `orchestrator_coverage_percent` — tested / total
-- `baseline_p50_first_frame_seconds` / `baseline_p95_first_frame_seconds` — rolling baselines
 - `baseline_drift_percent` — current vs baseline deviation
 
 ### 10.2 Push Mechanism
@@ -413,7 +460,7 @@ Metrics are pushed to Prometheus push gateway after each run completes. Batched 
 
 ### 10.3 Grafana Dashboards
 
-Seven panels, exported as JSON in `dashboards/grafana/scope-loadtest.json`:
+Six panels, exported as JSON in `dashboards/grafana/scope-loadtest.json`:
 
 | Panel | Content | Alert Condition |
 |-------|---------|-----------------|
@@ -423,7 +470,6 @@ Seven panels, exported as JSON in `dashboards/grafana/scope-loadtest.json`:
 | **Latency Trends** | 7-day line chart: P50/P95 first-frame latency, with baseline band | Drift > 20% from 7-day avg |
 | **Error Breakdown** | Stacked bar by error taxonomy over time | Runner errors > 10% of runs |
 | **Budget & Coverage** | Per-O progress bars: % budget consumed, coverage heat map | Any O under 50% budget at EOD |
-| **Quality** | Frame validation pass rate, SSIM distribution, recording validation rate | Black frame rate > 5% |
 
 ## 11. Docker Compose & Containers
 
@@ -432,7 +478,9 @@ Seven panels, exported as JSON in `dashboards/grafana/scope-loadtest.json`:
 ```yaml
 services:
   harness:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile.harness
     image: scope-loadtest-harness
     depends_on: [pushgateway]
     volumes:
@@ -440,11 +488,13 @@ services:
       - ./videos:/data/videos
       - ./data:/app/data
     environment:
-      - SCOPE_INSTANCES=scope-1:8001,scope-2:8002
+      - SCOPE_INSTANCES=${SCOPE_INSTANCES:-scope-1:8001,scope-2:8002}
       - GRAFANA_PUSH_URL=http://pushgateway:9091
       - LIVEPEER_DISCOVERY_URL=${LIVEPEER_DISCOVERY_URL}
       - LIVEPEER_TOKEN=${LIVEPEER_TOKEN}
       - SCOPE_CLOUD_APP_ID=${SCOPE_CLOUD_APP_ID}
+      - SCOPE_CLOUD_API_KEY=${SCOPE_CLOUD_API_KEY}
+    restart: unless-stopped
 
   scope-1:
     image: daydreamlive/scope:${SCOPE_IMAGE_TAG:-latest}
@@ -454,6 +504,7 @@ services:
     volumes:
       - ./videos:/data/videos
     ports: ["8001:8001"]
+    restart: unless-stopped
 
   scope-2:
     image: daydreamlive/scope:${SCOPE_IMAGE_TAG:-latest}
@@ -463,10 +514,12 @@ services:
     volumes:
       - ./videos:/data/videos
     ports: ["8002:8002"]
+    restart: unless-stopped
 
   pushgateway:
     image: prom/pushgateway:latest
     ports: ["9091:9091"]
+    restart: unless-stopped
 ```
 
 ### 11.2 Harness Dockerfile
@@ -486,7 +539,7 @@ CMD ["schedule"]
 
 ```bash
 python -m loadtest.cli schedule                              # start the scheduler daemon
-python -m loadtest.cli run --scenario longlive_t2v_short \
+python -m loadtest.cli run --scenario longlive_t2v_5m \
                            --orchestrator O-abc123           # single manual run
 python -m loadtest.cli discover                              # list orchestrators + health
 python -m loadtest.cli coverage                              # today's coverage report
@@ -495,7 +548,7 @@ python -m loadtest.cli baselines                             # current baseline 
 
 ### 11.4 Scaling
 
-To add a third Scope instance: add `scope-3` to docker-compose.yml and append to `SCOPE_INSTANCES`. The scheduler automatically distributes work across all available instances.
+To add a third Scope instance: add `scope-3` to docker-compose.yml and update `SCOPE_INSTANCES`. The scheduler automatically distributes work across all available instances.
 
 ### 11.5 Portability
 
@@ -519,48 +572,33 @@ scope-load-testing/
 │   └── loadtest/
 │       ├── __init__.py
 │       ├── cli.py               # CLI entrypoint (run, schedule, discover, coverage, baselines)
-│       ├── config.py            # Load YAML config, validate
+│       ├── config.py            # Load YAML config, validate, generate scenario matrix
 │       ├── scheduler.py         # Budget calculation, run timing, orchestrator rotation
 │       ├── discovery.py         # Livepeer orchestrator discovery + health check
 │       ├── coverage.py          # Track which orchestrators tested, persist state
 │       ├── executor.py          # Drive a single test scenario against a Scope instance
-│       ├── scenarios.py         # Load scenario YAML, build session start bodies
+│       ├── scenarios.py         # Scenario matrix expansion, session body builder
 │       ├── scope_client.py      # Async HTTP client for Scope API (typed)
 │       ├── metrics.py           # Prometheus metric definitions + push logic
-│       ├── validators.py        # Frame quality, SSIM, recording validation
+│       ├── validators.py        # Frame quality, prompt sensitivity (Pillow only)
 │       ├── results.py           # Result collection, error taxonomy, log capture
 │       └── regression.py        # Baseline comparison, drift detection
 ├── config/
-│   ├── default.yaml             # Budget, thresholds, global settings
-│   ├── scenarios/               # One YAML per test scenario
-│   │   ├── longlive_t2v_short.yaml
-│   │   ├── longlive_t2v_mid.yaml
-│   │   ├── longlive_t2v_long.yaml
-│   │   ├── longlive_v2v_short.yaml
-│   │   ├── longlive_v2v_mid.yaml
-│   │   ├── longlive_v2v_long.yaml
-│   │   ├── longlive_i2v_short.yaml
-│   │   ├── longlive_i2v_mid.yaml
-│   │   ├── ltx2_t2v_short.yaml
-│   │   ├── ltx2_t2v_mid.yaml
-│   │   ├── ltx2_i2v_short.yaml
-│   │   ├── ltx2_i2v_mid.yaml
-│   │   ├── chain_longlive_rife_mid.yaml
-│   │   ├── chain_depth_longlive_rife_mid.yaml
-│   │   └── chain_longlive_rife_long.yaml
+│   ├── default.yaml             # Budget, thresholds, scenario matrix
+│   ├── graphs/                  # Graph templates (multi-pipeline only)
+│   │   ├── chain_longlive_rife.yaml
+│   │   └── chain_depth_longlive_rife.yaml
 │   └── prompts/
 │       ├── nature.yaml
 │       ├── urban.yaml
 │       ├── abstract.yaml
 │       └── stress.yaml
-├── videos/
-│   ├── solid_red_512x512_30s.mp4
-│   ├── solid_green_512x512_30s.mp4
-│   ├── gradient_512x512_30s.mp4
-│   └── scene_change_512x512_60s.mp4
+├── videos/                      # Test input videos (generated, gitignored)
 ├── dashboards/
 │   └── grafana/
 │       └── scope-loadtest.json
+├── scripts/
+│   └── generate_test_videos.py
 ├── data/                        # gitignored, persistent volume
 │   ├── coverage.json
 │   ├── baselines.json
@@ -568,8 +606,19 @@ scope-load-testing/
 │   └── failures/
 ├── docs/
 │   ├── design.md
+│   ├── plans/
 │   └── docker-optimization-plan.md
 └── tests/
+    ├── test_config.py
+    ├── test_scenarios.py
+    ├── test_scope_client.py
+    ├── test_results.py
+    ├── test_validators.py
+    ├── test_metrics.py
+    ├── test_regression.py
+    ├── test_coverage.py
+    ├── test_discovery.py
+    ├── test_scheduler.py
     └── test_executor.py
 ```
 
@@ -581,20 +630,17 @@ scope-load-testing/
 | **Load** | Pipeline load time | Status "loaded" < 300s | Timeout or error |
 | **First frame** | Prompt to first frame | < 60s from stream start | No frame after 60s |
 | **Stability** | Stream FPS | fps_out > 0 for full duration | fps_out = 0 for > 10s |
-| **Shutdown** | Clean stop | Session stops, recording downloadable | Hang or error |
-| **Latency** | P50/P95/P99 prompt-to-first-frame | Track; alert on regression | > 20% degradation vs 7-day avg |
+| **Shutdown** | Clean stop | Session stops cleanly | Hang or error |
+| **Latency** | P50/P95 prompt-to-first-frame | Track; alert on regression | > 20% degradation vs 7-day avg |
 | **Quality** | Frame not black/corrupt | Pixel variance > threshold | Black or zero-variance frame |
 | **Quality** | Frame dimensions | Match requested resolution | Mismatch |
-| **Quality** | Prompt sensitivity | Different prompts → different frames (SSIM < 0.85) | Identical output |
+| **Quality** | Prompt sensitivity | Different prompts produce different frames | Identical output for different prompts |
 | **Resources** | VRAM usage | < 90% of total | OOM or > 90% |
-| **Resources** | VRAM leak | End VRAM within 200MB of start | Monotonic growth |
-| **Recording** | Valid output | Non-zero MP4, duration matches expected +/- 5s | Corrupt or wrong duration |
-| **Network** | Connection stability | No unexpected disconnects | Mid-session disconnect |
+| **Resources** | VRAM leak | End VRAM within 200MB of start (mid/long sessions) | Monotonic growth |
+| **Network** | Connection stability | No unexpected disconnects during session | Disconnect mid-session |
 | **Network** | Frame delivery | frames_from_cloud > 0 and growing | Stuck at 0 |
 | **Regression** | Baseline drift | Within 20% of 7-day rolling avg | > 20% deviation |
-| **Consistency** | Model output | Reference frame SSIM > 0.7 for same prompt+seed | SSIM < 0.7 |
 | **Cold start** | Frequency tracking | Informational — track per orchestrator | Sudden spike = alert |
-| **Routing** | Fairness | Requests distributed across runners | Always same runner |
 
 ## 14. Dependencies
 
@@ -602,8 +648,8 @@ scope-load-testing/
 - `httpx` — async HTTP client for Scope API
 - `prometheus_client` — metric definitions + push gateway
 - `pyyaml` — config and scenario loading
-- `Pillow` — JPEG decode, frame dimension/variance checks
-- `scikit-image` — SSIM computation for prompt sensitivity and model consistency
+- `Pillow` — JPEG decode, frame dimension/variance checks, pixel diff for prompt sensitivity
 - `click` — CLI framework
+- `numpy` — frame array operations (transitive dep of Pillow, used directly for pixel stats)
 
-**No ML dependencies.** No torch, no CUDA, no numpy beyond what Pillow/scikit-image pull in.
+**No ML dependencies.** No torch, no CUDA, no scikit-image, no scipy.

@@ -283,63 +283,59 @@ On failure, capture `GET /api/v1/logs/tail?lines=100` and store alongside the re
 ```
 scope-load-testing/
 ├── CLAUDE.md                     # This file
-├── docker-compose.yml            # Full stack: harness + scope + prometheus + pushgateway
-├── Dockerfile.harness            # Lightweight Python image for the harness
-├── pyproject.toml                # Harness Python package (httpx, prometheus_client, pyyaml)
+├── docker-compose.yml
+├── Dockerfile.harness
+├── pyproject.toml
+├── .env.example
 ├── src/
 │   └── loadtest/
 │       ├── __init__.py
-│       ├── cli.py                # CLI entrypoint (run, schedule, discover)
-│       ├── config.py             # Load YAML config, validate
-│       ├── scheduler.py          # Daily budget calculation, run timing, orchestrator rotation
-│       ├── discovery.py          # Livepeer orchestrator discovery + health check
-│       ├── coverage.py           # Track which orchestrators have been tested
-│       ├── executor.py           # Drive a single test scenario against a Scope instance
-│       ├── scenarios.py          # Scenario definitions (graph configs, modes, durations)
-│       ├── scope_client.py       # HTTP client for Scope API (typed, async)
-│       ├── metrics.py            # Prometheus metric definitions + push logic
-│       ├── validators.py         # Frame quality, SSIM, recording validation
-│       ├── results.py            # Result collection, error taxonomy, log capture
-│       └── regression.py         # Baseline comparison, drift detection
+│       ├── cli.py               # CLI entrypoint (run, schedule, discover, coverage, baselines)
+│       ├── config.py            # Load YAML config, validate, scenario matrix defs
+│       ├── scheduler.py         # Budget calculation, run timing, orchestrator rotation
+│       ├── discovery.py         # Livepeer orchestrator discovery + health check
+│       ├── coverage.py          # Track which orchestrators tested, persist state (pruned to 30 days)
+│       ├── executor.py          # Drive a single test scenario against a Scope instance
+│       ├── scenarios.py         # Scenario matrix expansion, session body builder
+│       ├── scope_client.py      # Async HTTP client for Scope API (typed)
+│       ├── metrics.py           # Prometheus metric definitions + push logic
+│       ├── validators.py        # Frame quality, prompt sensitivity (Pillow + numpy only)
+│       ├── results.py           # Result collection, error taxonomy, log capture
+│       └── regression.py        # Baseline comparison, drift detection
 ├── config/
-│   ├── default.yaml              # Default test configuration
-│   ├── scenarios/                # Test scenario definitions
-│   │   ├── longlive_t2v.yaml
-│   │   ├── longlive_v2v.yaml
-│   │   ├── longlive_i2v.yaml
-│   │   ├── ltx2_t2v.yaml
-│   │   ├── ltx2_i2v.yaml
+│   ├── default.yaml             # Budget, thresholds, scenario matrix
+│   ├── graphs/                  # Graph templates (multi-pipeline only)
 │   │   ├── chain_longlive_rife.yaml
 │   │   └── chain_depth_longlive_rife.yaml
-│   └── prompts/                  # Prompt datasets
+│   └── prompts/
 │       ├── nature.yaml
 │       ├── urban.yaml
 │       ├── abstract.yaml
-│       └── stress.yaml           # Edge-case prompts (long, special chars, empty)
-├── videos/                       # Test input videos (small, committed to repo)
-│   ├── solid_red_512x512_30s.mp4
-│   ├── solid_green_512x512_30s.mp4
-│   ├── gradient_512x512_30s.mp4
-│   └── scene_change_512x512_60s.mp4
+│       └── stress.yaml
+├── videos/                      # Test input videos (generated, gitignored)
+├── scripts/
+│   └── generate_test_videos.py
 ├── dashboards/
 │   └── grafana/
-│       └── scope-loadtest.json   # Grafana dashboard definition (importable)
+│       └── scope-loadtest.json
+├── data/                        # gitignored, persistent volume
 ├── docs/
-│   ├── design.md                 # Full design spec
+│   ├── design.md
+│   ├── plans/
 │   └── docker-optimization-plan.md
-└── tests/
-    └── test_executor.py          # Harness unit tests (mock Scope API)
+└── tests/                       # One test file per module
 ```
 
 ## Style Guidelines
 
 - Python 3.12+, type hints everywhere
 - Async-first (httpx.AsyncClient, asyncio)
-- No ML dependencies in the harness — only httpx, prometheus_client, pyyaml, Pillow (for frame validation), scikit-image (for SSIM)
+- No ML dependencies — only httpx, prometheus_client, pyyaml, Pillow, numpy, click
 - Config is YAML, code reads config — no hardcoded values for thresholds, URLs, or timing
 - All Scope API interactions go through `scope_client.py` — no raw HTTP calls elsewhere
 - Errors are classified by taxonomy (network/orchestrator/runner/protocol) before reporting
-- Every metric pushed to Prometheus must have labels: `orchestrator_id`, `pipeline`, `mode`, `scenario`
+- Standard Prometheus labels: `orchestrator_id`, `pipeline`, `mode` (extended labels on counters only)
+- Adding a new pipeline requires only config changes (scenario matrix entry + optional graph template), no code
 
 ## Test Video Generation
 
@@ -361,8 +357,15 @@ def create_test_video(path, color, width=512, height=512, fps=30, duration_s=30)
 
 1. **Overview:** Total runs, pass rate, active sessions, orchestrator count
 2. **Per-orchestrator:** Success rate, avg latency, FPS, coverage completeness
-3. **Per-pipeline:** Load time, first-frame latency, steady-state FPS, error rate
-4. **Regression:** 7-day P50/P95 latency trend, FPS trend, baseline drift alerts
+3. **Per-pipeline:** Load time, first-frame latency, steady-state FPS by pipeline + mode
+4. **Latency Trends:** 7-day P50/P95 first-frame latency with baseline band
 5. **Errors:** Failure taxonomy breakdown (network/orchestrator/runner/protocol)
-6. **Budget:** Daily test budget consumed vs planned, per orchestrator
-7. **Quality:** Frame validation pass rate, SSIM scores, recording validation
+6. **Budget & Coverage:** Daily test budget consumed vs planned, per orchestrator
+
+## v1 vs v2 Scope
+
+Features deferred to v2 (not in current implementation):
+- Recording download and MP4 validation
+- Model consistency (reference frame SSIM across runs)
+- Orchestrator routing fairness detection
+- scikit-image dependency (using Pillow pixel diff instead)
