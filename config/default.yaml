@@ -1,0 +1,69 @@
+budget:
+  daily_percent: 20
+  max_run_duration_mins: 30
+  min_run_gap_mins: 15
+  schedule_start: "00:00"
+  schedule_end: "23:59"
+
+thresholds:
+  connect_timeout_s: 120
+  pipeline_load_timeout_s: 300
+  first_frame_timeout_s: 60
+  stall_timeout_s: 10
+  min_fps: 6
+  max_vram_percent: 90
+  vram_leak_tolerance_mb: 200
+  prompt_diff_min: 10.0
+  regression_drift_threshold: 0.20
+  frame_variance_min: 5.0
+  frame_check_interval_s: 30
+  prompt_switch_interval_s: 30
+  cold_start_threshold_s: 60
+
+discovery:
+  refresh_interval_hours: 4
+  health_check_timeout_s: 30
+  max_consecutive_failures: 5
+
+scenarios:
+  - pipeline: longlive
+    modes: [t2v, v2v, i2v]
+    durations: [1, 5, 15]
+    prompts_pool: nature
+    parameters:
+      width: 512
+      height: 512
+      noise_scale: 0.7
+    source_files:
+      v2v: /data/videos/gradient_512x512_30s.mp4
+      i2v: /data/videos/solid_red_512x512_30s.mp4
+
+  - pipeline: ltx2
+    modes: [t2v, i2v]
+    durations: [1, 5]
+    prompts_pool: nature
+    parameters:
+      width: 512
+      height: 512
+    source_files:
+      i2v: /data/videos/solid_red_512x512_30s.mp4
+
+  - pipeline: longlive+rife
+    modes: [v2v]
+    durations: [5, 15]
+    graph_template: chain_longlive_rife
+    prompts_pool: nature
+    parameters:
+      noise_scale: 0.7
+      width: 512
+      height: 512
+
+  - pipeline: video-depth-anything+longlive+rife
+    modes: [v2v]
+    durations: [5]
+    graph_template: chain_depth_longlive_rife
+    prompts_pool: nature
+    parameters:
+      noise_scale: 0.7
+      width: 512
+      height: 512
