@@ -56,6 +56,15 @@ def run(ctx: click.Context, scenario: str, sdk_url: str, api_key: str):
     executor = SDKExecutor(config)
     result = asyncio.run(executor.run(sdk_url, api_key, sc, prompts))
 
+    # Push metrics if push gateway configured
+    push_url = os.environ.get("PUSHGATEWAY_URL")
+    if push_url:
+        from .metrics import MetricsCollector
+        metrics = MetricsCollector(push_url=push_url)
+        metrics.record_run(result)
+        metrics.push()
+        click.echo(f"  Metrics pushed to {push_url}")
+
     if result.passed:
         click.echo(f"PASS: {sc.name} ({result.timings.total_s:.1f}s)")
         if result.timings.connect_s:

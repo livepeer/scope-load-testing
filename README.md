@@ -70,6 +70,57 @@ No local GPU needed. The harness starts streams via the SDK, publishes input fra
 |----------|----------|---------|
 | `DAYDREAM_API_KEY` | Yes | - |
 | `SDK_URL` | No | `https://sdk.daydream.monster` |
+| `PUSHGATEWAY_URL` | No | `http://pushgateway:9091` (set by docker-compose) |
+
+## Grafana Monitoring Setup
+
+The harness pushes metrics to a Prometheus Push Gateway after each test run. To see data in Grafana:
+
+```
+loadtest harness → pushes metrics → Push Gateway (:9091) → Prometheus scrapes → Grafana queries
+```
+
+### Step 1: Deploy with docker-compose (includes push gateway)
+
+```bash
+echo "DAYDREAM_API_KEY=sk_..." > .env
+docker compose up -d    # starts harness + pushgateway
+```
+
+The push gateway runs at `http://<your-vm>:9091`.
+
+### Step 2: Add scrape target to your Prometheus
+
+Add this to your Prometheus `prometheus.yml` (the one Grafana already reads from):
+
+```yaml
+scrape_configs:
+  - job_name: 'scope_loadtest'
+    honor_labels: true
+    scrape_interval: 30s
+    static_configs:
+      - targets: ['<your-vm-ip>:9091']
+```
+
+Replace `<your-vm-ip>` with the IP or hostname of the machine running docker-compose.
+
+Then reload Prometheus: `curl -X POST http://your-prometheus:9090/-/reload`
+
+### Step 3: Import the Grafana dashboard
+
+Import `dashboards/grafana/scope-loadtest.json` into Grafana. Set the data source to the Prometheus instance from step 2.
+
+### Verify data is flowing
+
+```bash
+# Check push gateway has metrics
+curl -s http://<your-vm>:9091/metrics | grep scope_loadtest
+
+# Run a test to generate data
+docker compose run --rm harness run --scenario longlive_v2v_1m
+```
+
+After the test completes, metrics appear in the push gateway within seconds and in Grafana after the next Prometheus scrape (~30s).
 
 ## Test Results (staging, warm runner)
 

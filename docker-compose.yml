@@ -4,12 +4,16 @@ services:
       context: .
       dockerfile: Dockerfile.harness
     image: scope-loadtest-harness
+    depends_on: [pushgateway]
     volumes:
-      - ./config:/app/config
       - ./data:/app/data
     env_file: .env
     environment:
       - SDK_URL=${SDK_URL:-https://sdk.daydream.monster}
+      - PUSHGATEWAY_URL=http://pushgateway:9091
     restart: unless-stopped
-    # Default: run the scheduler daemon
-    # Override with: docker compose run harness run --scenario longlive_v2v_1m
+
+  pushgateway:
+    image: prom/pushgateway:latest
+    ports: ["9091:9091"]
+    restart: unless-stopped
