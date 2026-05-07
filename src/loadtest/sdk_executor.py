@@ -94,11 +94,17 @@ class SDKExecutor:
                     stream_data = await client.stream_start(params)
                     stream_id = stream_data["stream_id"]
 
-                    # 2. Wait for runner
+                    # 2. Wait for runner (404 is normal briefly during provisioning)
+                    not_found_count = 0
                     for _ in range(120):
                         status = await client.stream_status(stream_id)
                         if status is None:
-                            raise RuntimeError("Stream disappeared waiting for runner")
+                            not_found_count += 1
+                            if not_found_count > 6:  # 30s of continuous 404
+                                raise RuntimeError("Stream disappeared waiting for runner")
+                            await asyncio.sleep(5)
+                            continue
+                        not_found_count = 0
                         phase = status.get("phase", "unknown")
                         if phase in ("ready", "running", "connecting"):
                             result.timings.connect_s = time.monotonic() - connect_start
@@ -152,10 +158,11 @@ class SDKExecutor:
                         await asyncio.sleep(check_interval)
                         elapsed = time.monotonic() - stream_start
 
-                        # Status check
+                        # Status check (transient 404 is OK)
                         status = await client.stream_status(stream_id)
                         if status is None:
-                            raise RuntimeError("Stream disappeared mid-session")
+                            logger.warning("Stream %s returned 404, retrying...", stream_id)
+                            continue
 
                         # Frame capture + validation
                         try:

@@ -7,7 +7,9 @@ services:
     volumes:
       - ./config:/app/config
       - ./data:/app/data
+    env_file: .env
     environment:
-      - DAYDREAM_API_KEY=${DAYDREAM_API_KEY}
       - SDK_URL=${SDK_URL:-https://sdk.daydream.monster}
     restart: unless-stopped
+    # Default: run the scheduler daemon
+    # Override with: docker compose run harness run --scenario longlive_v2v_1m
