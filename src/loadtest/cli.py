@@ -3,6 +3,7 @@
 import asyncio
 import json
 import os
+import sys
 from pathlib import Path
 
 import click
@@ -13,13 +14,7 @@ CONTEXT_SETTINGS = {"help_option_names": ["-h", "--help"]}
 
 
 @click.group(context_settings=CONTEXT_SETTINGS)
-@click.option(
-    "--config",
-    "config_path",
-    type=click.Path(exists=True, dir_okay=False),
-    default=None,
-    help="Path to config YAML (default: config/default.yaml)",
-)
+@click.option("--config", "config_path", type=click.Path(exists=True, dir_okay=False), default=None)
 @click.pass_context
 def main(ctx: click.Context, config_path: str | None):
     """Scope cloud inference load testing harness."""
@@ -32,29 +27,23 @@ def main(ctx: click.Context, config_path: str | None):
 
 @main.command()
 @click.option("--scenario", required=True, help="Scenario key (e.g., longlive_t2v_5m)")
-@click.option("--orchestrator", default=None, help="Target orchestrator ID")
-@click.option("--scope-url", default="http://localhost:8001", help="Scope instance URL")
+@click.option("--sdk-url", envvar="SDK_URL", default="https://sdk.daydream.monster", help="SDK service URL")
+@click.option("--api-key", envvar="DAYDREAM_API_KEY", required=True, help="Daydream API key")
 @click.pass_context
-def run(ctx: click.Context, scenario: str, orchestrator: str | None, scope_url: str):
-    """Execute a single test run."""
-    from .executor import Executor
+def run(ctx: click.Context, scenario: str, sdk_url: str, api_key: str):
+    """Execute a single test run via the Daydream SDK."""
     from .scenarios import expand_scenario_matrix, load_prompt_pool
+    from .sdk_executor import SDKExecutor
 
     config = ctx.obj["config"]
     config_dir = ctx.obj["config_dir"]
-    data_dir = ctx.obj["data_dir"]
-    data_dir.mkdir(parents=True, exist_ok=True)
 
-    # Find scenario in expanded matrix
-    all_scenarios = expand_scenario_matrix(
-        config.scenario_defs, config_dir / "graphs"
-    )
+    all_scenarios = expand_scenario_matrix(config.scenario_defs, config_dir / "graphs")
     scenario_map = {s.name: s for s in all_scenarios}
 
     if scenario not in scenario_map:
-        available = ", ".join(sorted(scenario_map.keys()))
         click.echo(f"Unknown scenario: {scenario}")
-        click.echo(f"Available: {available}")
+        click.echo(f"Available: {', '.join(sorted(scenario_map.keys()))}")
         raise SystemExit(1)
 
     sc = scenario_map[scenario]
@@ -64,21 +53,16 @@ def run(ctx: click.Context, scenario: str, orchestrator: str | None, scope_url: 
     except FileNotFoundError:
         prompts = ["a scenic landscape"]
 
-    app_id = os.environ.get("SCOPE_CLOUD_APP_ID", "")
-    api_key = os.environ.get("SCOPE_CLOUD_API_KEY")
-    oid = orchestrator or "manual"
-
-    executor = Executor(config, data_dir=data_dir)
-    result = asyncio.run(
-        executor.run(scope_url, oid, sc, prompts, app_id, api_key)
-    )
+    executor = SDKExecutor(config)
+    result = asyncio.run(executor.run(sdk_url, api_key, sc, prompts))
 
     if result.passed:
         click.echo(f"PASS: {sc.name} ({result.timings.total_s:.1f}s)")
+        if result.timings.connect_s:
+            click.echo(f"  Connect: {result.timings.connect_s:.1f}s {'(cold)' if result.cold_start else '(warm)'}")
         if result.timings.first_frame_s:
             click.echo(f"  First frame: {result.timings.first_frame_s:.1f}s")
-        if result.avg_fps:
-            click.echo(f"  Avg FPS: {result.avg_fps:.1f}")
+        click.echo(f"  Frames validated: {result.frames_validated}")
     else:
         click.echo(f"FAIL: {sc.name} [{result.error_category}] {result.error_message}")
     raise SystemExit(0 if result.passed else 1)
@@ -86,7 +70,24 @@ def run(ctx: click.Context, scenario: str, orchestrator: str | None, scope_url: 
 
 @main.command()
 @click.pass_context
-def schedule(ctx: click.Context):
+def scenarios(ctx: click.Context):
+    """List all available test scenarios."""
+    from .scenarios import expand_scenario_matrix
+
+    config = ctx.obj["config"]
+    config_dir = ctx.obj["config_dir"]
+
+    all_scenarios = expand_scenario_matrix(config.scenario_defs, config_dir / "graphs")
+    click.echo(f"{len(all_scenarios)} scenarios:")
+    for s in all_scenarios:
+        click.echo(f"  {s.name:40s} {s.pipeline:20s} {s.mode:5s} {s.duration_mins:3d}m {s.duration_class}")
+
+
+@main.command()
+@click.option("--sdk-url", envvar="SDK_URL", default="https://sdk.daydream.monster")
+@click.option("--api-key", envvar="DAYDREAM_API_KEY", required=True)
+@click.pass_context
+def schedule(ctx: click.Context, sdk_url: str, api_key: str):
     """Start the scheduler daemon."""
     from .scheduler import run_scheduler
 
@@ -95,34 +96,12 @@ def schedule(ctx: click.Context):
     data_dir = ctx.obj["data_dir"]
     data_dir.mkdir(parents=True, exist_ok=True)
 
-    click.echo("Starting scheduler daemon...")
+    # Inject SDK vars into env for the scheduler to pick up
+    os.environ.setdefault("SDK_URL", sdk_url)
+    os.environ.setdefault("DAYDREAM_API_KEY", api_key)
+
+    click.echo(f"Starting scheduler (sdk={sdk_url})...")
     asyncio.run(run_scheduler(config, config_dir, data_dir))
-
-
-@main.command()
-@click.pass_context
-def discover(ctx: click.Context):
-    """List available orchestrators and their health status."""
-    from .discovery import discover_orchestrators
-
-    discovery_url = os.environ.get("LIVEPEER_DISCOVERY_URL", "")
-    livepeer_token = os.environ.get("LIVEPEER_TOKEN")
-
-    if not discovery_url:
-        click.echo("LIVEPEER_DISCOVERY_URL not set")
-        raise SystemExit(1)
-
-    orchestrators = asyncio.run(
-        discover_orchestrators(discovery_url, livepeer_token)
-    )
-
-    if not orchestrators:
-        click.echo("No orchestrators found")
-        return
-
-    click.echo(f"Found {len(orchestrators)} orchestrators:")
-    for o in orchestrators:
-        click.echo(f"  {o.id}  {o.address}  region={o.region or 'unknown'}  status={o.status}")
 
 
 @main.command()
@@ -144,16 +123,12 @@ def coverage(ctx: click.Context):
         completed = entry["runs_completed"]
         planned = entry["runs_planned"]
         failures = entry["failures"]
-        scenarios = len(entry["scenarios_covered"])
+        n_scenarios = len(entry["scenarios_covered"])
         pct = (completed / planned * 100) if planned > 0 else 0
-        click.echo(
-            f"  {oid}: {completed}/{planned} runs ({pct:.0f}%), "
-            f"{scenarios} scenarios, {failures} failures"
-        )
+        click.echo(f"  {oid}: {completed}/{planned} runs ({pct:.0f}%), {n_scenarios} scenarios, {failures} failures")
 
     debt = tracker.get_test_debt()
-    total_debt = sum(debt.values())
-    click.echo(f"\nTotal remaining runs: {total_debt}")
+    click.echo(f"\nTotal remaining runs: {sum(debt.values())}")
 
 
 @main.command()
@@ -175,7 +150,7 @@ def baselines(ctx: click.Context):
         return
 
     click.echo("Current baselines (7-day rolling):")
-    for scenario, vals in sorted(data.items()):
+    for sc, vals in sorted(data.items()):
         ff = vals.get("first_frame_p50")
         fps = vals.get("steady_fps_p50")
         load = vals.get("pipeline_load_p50")
@@ -187,7 +162,7 @@ def baselines(ctx: click.Context):
             parts.append(f"fps_p50={fps:.1f}")
         if load is not None:
             parts.append(f"load_p50={load:.1f}s")
-        click.echo(f"  {scenario}: {', '.join(parts)}")
+        click.echo(f"  {sc}: {', '.join(parts)}")
 
 
 if __name__ == "__main__":

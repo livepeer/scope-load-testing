@@ -47,10 +47,15 @@ class SDKClient:
         return resp.json()
 
     async def stream_start(self, params: dict[str, Any]) -> dict[str, Any]:
-        """Start a stream. Returns {stream_id, publish_url, subscribe_url, ...}."""
+        """Start a stream. Returns {stream_id, publish_url, subscribe_url, ...}.
+
+        Uses a longer timeout (10 min) because the orchestrator may need to
+        provision a runner on cold start.
+        """
         resp = await self.client.post(
             "/stream/start",
             json={"model_id": "scope", "params": params},
+            timeout=httpx.Timeout(connect=30.0, read=600.0, write=30.0, pool=30.0),
         )
         resp.raise_for_status()
         return resp.json()
