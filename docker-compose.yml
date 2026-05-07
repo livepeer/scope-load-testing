@@ -1,0 +1,44 @@
+services:
+  harness:
+    build:
+      context: .
+      dockerfile: Dockerfile.harness
+    image: scope-loadtest-harness
+    depends_on: [pushgateway]
+    volumes:
+      - ./config:/app/config
+      - ./videos:/data/videos
+      - ./data:/app/data
+    environment:
+      - SCOPE_INSTANCES=${SCOPE_INSTANCES:-scope-1:8001,scope-2:8002}
+      - GRAFANA_PUSH_URL=http://pushgateway:9091
+      - LIVEPEER_DISCOVERY_URL=${LIVEPEER_DISCOVERY_URL}
+      - LIVEPEER_TOKEN=${LIVEPEER_TOKEN}
+      - SCOPE_CLOUD_APP_ID=${SCOPE_CLOUD_APP_ID}
+      - SCOPE_CLOUD_API_KEY=${SCOPE_CLOUD_API_KEY}
+    restart: unless-stopped
+
+  scope-1:
+    image: daydreamlive/scope:${SCOPE_IMAGE_TAG:-latest}
+    command: ["uv", "run", "daydream-scope", "--host", "0.0.0.0", "--port", "8001"]
+    environment:
+      - CUDA_VISIBLE_DEVICES=
+    volumes:
+      - ./videos:/data/videos
+    ports: ["8001:8001"]
+    restart: unless-stopped
+
+  scope-2:
+    image: daydreamlive/scope:${SCOPE_IMAGE_TAG:-latest}
+    command: ["uv", "run", "daydream-scope", "--host", "0.0.0.0", "--port", "8002"]
+    environment:
+      - CUDA_VISIBLE_DEVICES=
+    volumes:
+      - ./videos:/data/videos
+    ports: ["8002:8002"]
+    restart: unless-stopped
+
+  pushgateway:
+    image: prom/pushgateway:latest
+    ports: ["9091:9091"]
+    restart: unless-stopped
