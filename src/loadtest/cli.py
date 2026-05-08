@@ -174,5 +174,28 @@ def baselines(ctx: click.Context):
         click.echo(f"  {sc}: {', '.join(parts)}")
 
 
+@main.command()
+@click.pass_context
+def datasets(ctx: click.Context):
+    """Show dataset summary and health check."""
+    from .datasets import get_dataset_summary
+
+    summary = get_dataset_summary()
+
+    click.echo("Prompt pools:")
+    for pool in summary["prompt_pools"]:
+        status = "OK" if pool["count"] >= 20 else f"LOW (need {20 - pool['count']} more)"
+        click.echo(f"  {pool['name']:15s} {pool['count']:3d} prompts  {status}")
+
+    click.echo(f"\nTotal: {summary['total_prompts']} prompts, "
+               f"{summary['reference_images']} images, "
+               f"{summary['video_clips']} clips")
+
+    if summary["reference_images"] == 0:
+        click.echo("\nTip: Use the enrich-datasets skill to generate reference images via storyboard MCP")
+    if summary["video_clips"] == 0:
+        click.echo("Tip: Use the enrich-datasets skill to generate video clips via storyboard MCP")
+
+
 if __name__ == "__main__":
     main()

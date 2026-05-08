@@ -4,6 +4,7 @@ Handles:
 - Random prompt pool rotation per run (ensures all pools get coverage)
 - Randomized prompt ordering within a pool (prevents same sequence every time)
 - Synthetic video frame generation with varying visual complexity
+- Reference image/clip selection from manifest for i2v/v2v
 - Dataset coverage tracking across runs
 """
 
@@ -13,11 +14,14 @@ import random
 from pathlib import Path
 
 import numpy as np
+import yaml
 from PIL import Image
 
 from .scenarios import load_prompt_pool
 
 logger = logging.getLogger(__name__)
+
+MANIFEST_PATH = Path("config/datasets/manifest.yaml")
 
 
 # ---------------------------------------------------------------------------
@@ -130,3 +134,89 @@ def select_video_style(
     choices = styles or list(FRAME_GENERATORS.keys())
     rng = random.Random(seed)
     return rng.choice(choices)
+
+
+# ---------------------------------------------------------------------------
+# Manifest-based asset selection (images and clips)
+# ---------------------------------------------------------------------------
+
+
+def load_manifest(manifest_path: Path | None = None) -> dict:
+    """Load the dataset manifest."""
+    path = manifest_path or MANIFEST_PATH
+    if not path.exists():
+        return {"prompts": {"pools": []}, "images": {"items": []}, "clips": {"items": []}}
+    with open(path) as f:
+        return yaml.safe_load(f) or {}
+
+
+def select_reference_image(
+    tags: list[str] | None = None,
+    manifest_path: Path | None = None,
+    seed: int | None = None,
+) -> dict | None:
+    """Pick a reference image from the manifest, optionally filtered by tags.
+
+    Returns the manifest entry dict, or None if no images available.
+    """
+    manifest = load_manifest(manifest_path)
+    items = manifest.get("images", {}).get("items", [])
+    if not items:
+        return None
+
+    if tags:
+        tag_set = set(tags)
+        items = [i for i in items if tag_set & set(i.get("tags", []))]
+
+    if not items:
+        return None
+
+    rng = random.Random(seed)
+    return rng.choice(items)
+
+
+def select_video_clip(
+    tags: list[str] | None = None,
+    manifest_path: Path | None = None,
+    seed: int | None = None,
+) -> dict | None:
+    """Pick a video clip from the manifest, optionally filtered by tags.
+
+    Returns the manifest entry dict, or None if no clips available.
+    """
+    manifest = load_manifest(manifest_path)
+    items = manifest.get("clips", {}).get("items", [])
+    if not items:
+        return None
+
+    if tags:
+        tag_set = set(tags)
+        items = [i for i in items if tag_set & set(i.get("tags", []))]
+
+    if not items:
+        return None
+
+    rng = random.Random(seed)
+    return rng.choice(items)
+
+
+def get_dataset_summary(manifest_path: Path | None = None) -> dict:
+    """Get a summary of all available test datasets."""
+    manifest = load_manifest(manifest_path)
+    prompts_dir = Path("config/prompts")
+
+    prompt_count = 0
+    pools = []
+    for f in sorted(prompts_dir.glob("*.yaml")):
+        with open(f) as fh:
+            data = yaml.safe_load(fh)
+        count = len(data.get("prompts", []))
+        prompt_count += count
+        pools.append({"name": f.stem, "count": count})
+
+    return {
+        "prompt_pools": pools,
+        "total_prompts": prompt_count,
+        "reference_images": len(manifest.get("images", {}).get("items", [])),
+        "video_clips": len(manifest.get("clips", {}).get("items", [])),
+    }

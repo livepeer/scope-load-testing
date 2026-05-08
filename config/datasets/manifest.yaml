@@ -1,0 +1,55 @@
+# Dataset manifest — tracks all test assets (prompts, images, clips).
+# The enrich-datasets skill reads this to avoid duplicates.
+# Each entry has a source (how it was created) and tags for selection.
+
+prompts:
+  pools:
+    - name: nature
+      file: config/prompts/nature.yaml
+      count: 20
+      tags: [scenic, outdoor, landscape]
+      source: manual
+
+    - name: urban
+      file: config/prompts/urban.yaml
+      count: 20
+      tags: [city, architecture, street]
+      source: manual
+
+    - name: abstract
+      file: config/prompts/abstract.yaml
+      count: 20
+      tags: [geometric, pattern, generative]
+      source: manual
+
+    - name: stress
+      file: config/prompts/stress.yaml
+      count: 14
+      tags: [edge-case, minimal, long, special-chars]
+      source: manual
+
+images:
+  # i2v reference images — used as first-frame input for image-to-video
+  # Generated via storyboard MCP or downloaded from URLs
+  items: []
+  # Example entry:
+  # - id: mountain_lake_001
+  #   file: config/datasets/images/mountain_lake_001.jpg
+  #   prompt: "a serene mountain lake at sunrise"
+  #   tags: [nature, water, landscape]
+  #   source: storyboard_mcp
+  #   resolution: 512x512
+
+clips:
+  # v2v input clips — short video loops for video-to-video testing
+  # Generated via storyboard MCP scope_start tool or synthetic
+  items: []
+  # Example entry:
+  # - id: ocean_waves_001
+  #   file: config/datasets/clips/ocean_waves_001.mp4
+  #   prompt: "ocean waves on a rocky coast"
+  #   tags: [nature, water, motion]
+  #   source: storyboard_mcp
+  #   resolution: 512x512
+  #   duration_s: 10
+  #   fps: 30
