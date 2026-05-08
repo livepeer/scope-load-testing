@@ -24,37 +24,37 @@ prompts:
       file: config/prompts/people.yaml
       count: 20
       tags: [faces, crowds, portraits, expressions]
-      source: claude-generated
+      source: manual
     - name: animals
       file: config/prompts/animals.yaml
       count: 20
       tags: [wildlife, pets, underwater, birds]
-      source: claude-generated
+      source: manual
     - name: weather
       file: config/prompts/weather.yaml
       count: 20
       tags: [storms, rain, snow, fog, lightning]
-      source: claude-generated
+      source: manual
     - name: scifi
       file: config/prompts/scifi.yaml
       count: 20
       tags: [space, robots, cyberpunk, futuristic]
-      source: claude-generated
+      source: manual
     - name: fantasy
       file: config/prompts/fantasy.yaml
       count: 20
       tags: [dragons, castles, magic, mythical]
-      source: claude-generated
+      source: manual
     - name: food
       file: config/prompts/food.yaml
       count: 20
       tags: [cooking, ingredients, close-up, baking]
-      source: claude-generated
+      source: manual
     - name: motion
       file: config/prompts/motion.yaml
       count: 20
       tags: [sports, vehicles, explosions, high-motion]
-      source: claude-generated
+      source: manual
 
 images:
   items: []
