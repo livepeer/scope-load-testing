@@ -34,7 +34,7 @@ scenarios:
   - pipeline: longlive
     modes: [t2v, v2v, i2v]
     durations: [1, 5, 15]
-    prompts_pools: [nature, urban, abstract, stress]
+    prompts_pools: [nature, urban, abstract, people, animals, weather, scifi, fantasy, food, motion, stress]
     parameters:
       width: 512
       height: 512
@@ -43,7 +43,7 @@ scenarios:
   - pipeline: ltx2
     modes: [t2v, i2v]
     durations: [1, 5]
-    prompts_pools: [nature, urban, abstract, stress]
+    prompts_pools: [nature, urban, abstract, people, animals, weather, scifi, fantasy, food, motion, stress]
     parameters:
       width: 512
       height: 512
@@ -52,7 +52,7 @@ scenarios:
     modes: [v2v]
     durations: [5, 15]
     graph_template: chain_longlive_rife
-    prompts_pools: [nature, urban, abstract]
+    prompts_pools: [nature, urban, abstract, people, animals, weather, scifi, fantasy, food, motion]
     parameters:
       noise_scale: 0.7
       width: 512
@@ -62,7 +62,7 @@ scenarios:
     modes: [v2v]
     durations: [5]
     graph_template: chain_depth_longlive_rife
-    prompts_pools: [nature, urban, abstract]
+    prompts_pools: [nature, urban, abstract, people, animals, weather, scifi, fantasy, food, motion]
     parameters:
       noise_scale: 0.7
       width: 512
