@@ -1,10 +1,7 @@
 """Generate reference video clips for v2v testing via SDK LV2V streams.
 
-Starts a longlive t2v stream, captures output frames for 10s, saves as
-a sequence of JPEG frames in config/datasets/clips/{id}/.
-
-These frame sequences are used by the v2v executor to publish realistic
-input frames instead of synthetic solid-color frames.
+Starts longlive t2v streams, captures output frames for 10s, saves as
+JPEG frame sequences in config/datasets/clips/{id}/.
 
 Usage:
     export DAYDREAM_API_KEY=sk_...
@@ -24,11 +21,11 @@ import yaml
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("gen-clips")
 
-SDK_URL = "https://sdk.daydream.monster"
+SDK_URL = os.environ.get("SDK_URL", "https://sdk.daydream.monster")
 CLIPS_DIR = Path("config/datasets/clips")
 MANIFEST_PATH = Path("config/datasets/manifest.yaml")
 CAPTURE_DURATION_S = 10
-CAPTURE_INTERVAL_S = 0.5  # ~2 fps capture
+CAPTURE_INTERVAL_S = 0.5
 
 CLIP_SPECS = [
     {"id": "nature_lake", "prompt": "a calm mountain lake with gentle ripples and birds flying", "tags": ["nature", "water", "calm"]},
@@ -47,12 +44,11 @@ CLIP_SPECS = [
 
 
 async def capture_clip(api_key: str, spec: dict) -> list[bytes]:
-    """Start a t2v stream, capture frames for CAPTURE_DURATION_S, return frame list."""
+    """Start a t2v stream, capture frames, return frame list."""
     headers = {"Authorization": f"Bearer {api_key}"}
     timeout = httpx.Timeout(connect=30.0, read=600.0, write=30.0, pool=30.0)
 
     async with httpx.AsyncClient(base_url=SDK_URL, headers=headers, timeout=timeout) as client:
-        # Start stream
         resp = await client.post("/stream/start", json={
             "model_id": "scope",
             "params": {"prompt": spec["prompt"], "pipeline_ids": ["longlive"]},
@@ -61,7 +57,7 @@ async def capture_clip(api_key: str, spec: dict) -> list[bytes]:
         stream_id = resp.json()["stream_id"]
 
         try:
-            # Wait for runner
+            # Wait for runner — fail fast on error phases
             for _ in range(120):
                 status = await client.get(f"/stream/{stream_id}/status")
                 if status.status_code == 404:
@@ -69,21 +65,24 @@ async def capture_clip(api_key: str, spec: dict) -> list[bytes]:
                 phase = status.json().get("phase", "unknown")
                 if phase in ("ready", "running", "connecting"):
                     break
+                if phase in ("error", "failed"):
+                    raise RuntimeError(f"Stream entered terminal phase: {phase}")
                 await asyncio.sleep(5)
             else:
                 raise TimeoutError("Runner not ready")
 
-            # Wait for first frame
+            # Wait for first frame and include it in results
+            frames = []
             for _ in range(60):
                 frame_resp = await client.get(f"/stream/{stream_id}/frame")
                 if frame_resp.status_code == 200 and len(frame_resp.content) > 100:
+                    frames.append(frame_resp.content)
                     break
                 await asyncio.sleep(1)
             else:
                 raise TimeoutError("No first frame")
 
-            # Capture frames
-            frames = []
+            # Capture remaining frames
             start = time.monotonic()
             while time.monotonic() - start < CAPTURE_DURATION_S:
                 frame_resp = await client.get(f"/stream/{stream_id}/frame")
@@ -108,7 +107,6 @@ async def main():
 
     CLIPS_DIR.mkdir(parents=True, exist_ok=True)
 
-    # Load manifest
     if MANIFEST_PATH.exists():
         with open(MANIFEST_PATH) as f:
             manifest = yaml.safe_load(f) or {}
@@ -125,16 +123,13 @@ async def main():
             continue
 
         logger.info("Capturing %s: %s", spec["id"], spec["prompt"][:50])
-
         try:
             frames = await capture_clip(api_key, spec)
-
             if not frames:
                 logger.warning("  No frames captured for %s", spec["id"])
                 failed.append(spec["id"])
                 continue
 
-            # Save frames
             clip_dir = CLIPS_DIR / spec["id"]
             clip_dir.mkdir(parents=True, exist_ok=True)
             for i, frame in enumerate(frames):
@@ -147,6 +142,7 @@ async def main():
                 "tags": spec["tags"],
                 "source": "sdk_capture",
                 "resolution": "512x512",
+                "format": "jpeg_sequence",
                 "frame_count": len(frames),
                 "duration_s": CAPTURE_DURATION_S,
             })
@@ -156,24 +152,21 @@ async def main():
             logger.error("  FAIL %s: %s", spec["id"], e)
             failed.append(spec["id"])
 
-    # Update manifest
     if generated:
         clips_items = manifest.get("clips", {}).get("items", [])
         clips_items.extend(generated)
         if "clips" not in manifest:
             manifest["clips"] = {}
         manifest["clips"]["items"] = clips_items
-
         with open(MANIFEST_PATH, "w") as f:
             yaml.dump(manifest, f, default_flow_style=False, sort_keys=False)
-
         logger.info("Generated %d clips, %d failed", len(generated), len(failed))
     else:
         logger.info("No new clips generated")
 
     if failed:
         logger.warning("Failed: %s", ", ".join(failed))
-    return 1 if failed and not generated else 0
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":
