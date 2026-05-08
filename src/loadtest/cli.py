@@ -32,7 +32,8 @@ def main(ctx: click.Context, config_path: str | None):
 @click.pass_context
 def run(ctx: click.Context, scenario: str, sdk_url: str, api_key: str):
     """Execute a single test run via the Daydream SDK."""
-    from .scenarios import expand_scenario_matrix, load_prompt_pool
+    from .datasets import select_prompts
+    from .scenarios import expand_scenario_matrix
     from .sdk_executor import SDKExecutor
 
     config = ctx.obj["config"]
@@ -48,10 +49,9 @@ def run(ctx: click.Context, scenario: str, sdk_url: str, api_key: str):
 
     sc = scenario_map[scenario]
 
-    try:
-        prompts = load_prompt_pool(sc.prompts_pool, config_dir / "prompts")
-    except FileNotFoundError:
-        prompts = ["a scenic landscape"]
+    pools = sc.prompts_pools or [sc.prompts_pool]
+    pool_name, prompts = select_prompts(pools, config_dir / "prompts")
+    click.echo(f"Prompt pool: {pool_name} ({len(prompts)} prompts, shuffled)")
 
     executor = SDKExecutor(config)
     result = asyncio.run(executor.run(sdk_url, api_key, sc, prompts))

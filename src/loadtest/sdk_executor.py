@@ -1,15 +1,12 @@
 """Drives a single test scenario via the Daydream SDK service."""
 
 import asyncio
-import io
 import logging
 import time
 from typing import Any
 
-import numpy as np
-from PIL import Image
-
 from .config import LoadTestConfig
+from .datasets import make_input_frame, select_video_style
 from .results import (
     ErrorCategory,
     PhaseTimings,
@@ -21,18 +18,6 @@ from .sdk_client import SDKClient
 from .validators import FrameCheckResult, check_prompt_sensitivity, validate_frame
 
 logger = logging.getLogger(__name__)
-
-
-def _make_input_frame(width: int, height: int, frame_num: int) -> bytes:
-    """Generate a synthetic JPEG input frame with varying color."""
-    t = (frame_num % 300) / 300.0
-    r = int(128 + 127 * np.sin(t * 2 * np.pi))
-    g = int(128 + 127 * np.sin(t * 2 * np.pi + 2.094))
-    b = int(128 + 127 * np.sin(t * 2 * np.pi + 4.189))
-    img = Image.new("RGB", (width, height), (r, g, b))
-    buf = io.BytesIO()
-    img.save(buf, format="JPEG", quality=75)
-    return buf.getvalue()
 
 
 class SDKExecutor:
@@ -120,12 +105,14 @@ class SDKExecutor:
                     publish_seq = 0
                     width = scenario.parameters.get("width", 512)
                     height = scenario.parameters.get("height", 512)
+                    video_style = select_video_style()
+                    logger.info("Video input style: %s", video_style)
 
                     if scenario.mode in ("v2v", "i2v"):
                         async def _publisher():
                             nonlocal publish_seq
                             while not publish_stop.is_set():
-                                frame = _make_input_frame(width, height, publish_seq)
+                                frame = make_input_frame(width, height, publish_seq, style=video_style)
                                 try:
                                     await client.stream_publish(stream_id, frame, publish_seq)
                                     publish_seq += 1

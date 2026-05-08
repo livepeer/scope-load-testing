@@ -25,34 +25,34 @@ discovery:
   health_check_timeout_s: 30
   max_consecutive_failures: 5
 
+# Prompt pool rotation: each scenario matrix entry lists multiple pools.
+# The executor picks a pool randomly per run, ensuring all pools get
+# covered across a day's worth of runs. This prevents the same prompts
+# from hitting the same orchestrator every time.
+
 scenarios:
   - pipeline: longlive
     modes: [t2v, v2v, i2v]
     durations: [1, 5, 15]
-    prompts_pool: nature
+    prompts_pools: [nature, urban, abstract, stress]
     parameters:
       width: 512
       height: 512
       noise_scale: 0.7
-    source_files:
-      v2v: /data/videos/gradient_512x512_30s.mp4
-      i2v: /data/videos/solid_red_512x512_30s.mp4
 
   - pipeline: ltx2
     modes: [t2v, i2v]
     durations: [1, 5]
-    prompts_pool: nature
+    prompts_pools: [nature, urban, abstract, stress]
     parameters:
       width: 512
       height: 512
-    source_files:
-      i2v: /data/videos/solid_red_512x512_30s.mp4
 
   - pipeline: longlive+rife
     modes: [v2v]
     durations: [5, 15]
     graph_template: chain_longlive_rife
-    prompts_pool: nature
+    prompts_pools: [nature, urban, abstract]
     parameters:
       noise_scale: 0.7
       width: 512
@@ -62,8 +62,17 @@ scenarios:
     modes: [v2v]
     durations: [5]
     graph_template: chain_depth_longlive_rife
-    prompts_pool: nature
+    prompts_pools: [nature, urban, abstract]
     parameters:
       noise_scale: 0.7
       width: 512
       height: 512
+
+# Video input configuration for v2v/i2v modes.
+# "synthetic" generates procedural frames (gradient, noise, motion).
+# Future: add "realistic" with real video clips.
+video_input:
+  mode: synthetic
+  width: 512
+  height: 512
+  styles: [gradient, noise, blocks]

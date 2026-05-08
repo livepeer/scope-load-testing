@@ -16,6 +16,7 @@ class Scenario:
     graph: dict[str, Any] | None
     prompts_pool: str
     parameters: dict[str, Any]
+    prompts_pools: list[str] | None = None  # all available pools for rotation
 
     @property
     def pipeline_ids(self) -> list[str]:
@@ -62,6 +63,9 @@ def expand_scenario_matrix(
             with open(graph_path) as f:
                 graph = yaml.safe_load(f)
 
+        # Support both singular "prompts_pool" and plural "prompts_pools"
+        pools = entry.get("prompts_pools") or [entry.get("prompts_pool", "nature")]
+
         for mode in entry.get("modes", ["t2v"]):
             for dur in entry.get("durations", [5]):
                 name = f"{pipeline.replace('+', '_')}_{mode}_{dur}m"
@@ -75,7 +79,8 @@ def expand_scenario_matrix(
                         mode=mode,
                         duration_mins=dur,
                         graph=graph,
-                        prompts_pool=entry.get("prompts_pool", "nature"),
+                        prompts_pool=pools[0],  # default pool
+                        prompts_pools=pools,     # all available pools
                         parameters=params,
                     )
                 )
