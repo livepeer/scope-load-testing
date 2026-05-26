@@ -178,6 +178,12 @@ async def run_scheduler(
 
         # Push metrics
         metrics.record_run(result)
+
+        # Update budget gauges
+        today = coverage.get_today()
+        sdk_entry = today.get("sdk", {})
+        metrics.update_budget("sdk", sdk_entry.get("runs_planned", 0), sdk_entry.get("runs_completed", 0))
+
         metrics.push()
 
         status = "PASS" if result.passed else f"FAIL [{result.error_category}]"

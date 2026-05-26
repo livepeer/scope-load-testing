@@ -9,44 +9,24 @@
       "pluginName": "Prometheus"
     }
   ],
-  "annotations": {
-    "list": []
-  },
   "editable": true,
-  "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
-  "id": null,
-  "links": [],
   "panels": [
     {
       "title": "Overview",
       "type": "row",
       "gridPos": {"h": 1, "w": 24, "x": 0, "y": 0},
-      "collapsed": false,
-      "panels": []
+      "collapsed": false
     },
     {
-      "title": "Total Runs Today",
+      "title": "Total Runs",
       "type": "stat",
       "gridPos": {"h": 4, "w": 6, "x": 0, "y": 1},
       "datasource": "${DS_PROMETHEUS}",
       "targets": [
-        {
-          "expr": "sum(runs_total{job=\"scope_loadtest\"})",
-          "legendFormat": "Total Runs"
-        }
+        {"expr": "sum(runs_total{job=\"scope_loadtest\"})"}
       ],
-      "fieldConfig": {
-        "defaults": {
-          "thresholds": {
-            "steps": [
-              {"color": "red", "value": null},
-              {"color": "yellow", "value": 10},
-              {"color": "green", "value": 50}
-            ]
-          }
-        }
-      }
+      "fieldConfig": {"defaults": {"thresholds": {"steps": [{"color": "red", "value": null}, {"color": "yellow", "value": 10}, {"color": "green", "value": 50}]}}}
     },
     {
       "title": "Pass Rate",
@@ -54,300 +34,170 @@
       "gridPos": {"h": 4, "w": 6, "x": 6, "y": 1},
       "datasource": "${DS_PROMETHEUS}",
       "targets": [
-        {
-          "expr": "sum(runs_total{job=\"scope_loadtest\", result=\"pass\"}) / sum(runs_total{job=\"scope_loadtest\"}) * 100",
-          "legendFormat": "Pass %"
-        }
+        {"expr": "sum(runs_total{job=\"scope_loadtest\", result=\"pass\"}) / sum(runs_total{job=\"scope_loadtest\"}) * 100"}
       ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "percent",
-          "min": 0,
-          "max": 100,
-          "thresholds": {
-            "steps": [
-              {"color": "red", "value": null},
-              {"color": "yellow", "value": 70},
-              {"color": "green", "value": 90}
-            ]
-          }
-        }
-      }
+      "fieldConfig": {"defaults": {"unit": "percent", "min": 0, "max": 100, "thresholds": {"steps": [{"color": "red", "value": null}, {"color": "yellow", "value": 70}, {"color": "green", "value": 90}]}}}
     },
     {
-      "title": "Orchestrators Tested",
+      "title": "Failures",
       "type": "stat",
       "gridPos": {"h": 4, "w": 6, "x": 12, "y": 1},
       "datasource": "${DS_PROMETHEUS}",
       "targets": [
-        {
-          "expr": "orchestrator_coverage_percent{job=\"scope_loadtest\"}",
-          "legendFormat": "Coverage %"
-        }
+        {"expr": "sum(runs_total{job=\"scope_loadtest\", result=\"fail\"}) or vector(0)"}
       ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "percent"
-        }
-      }
+      "fieldConfig": {"defaults": {"thresholds": {"steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 5}, {"color": "red", "value": 20}]}}}
     },
     {
-      "title": "Failure Count",
+      "title": "Budget Consumed",
       "type": "stat",
       "gridPos": {"h": 4, "w": 6, "x": 18, "y": 1},
       "datasource": "${DS_PROMETHEUS}",
       "targets": [
-        {
-          "expr": "sum(runs_total{job=\"scope_loadtest\", result=\"fail\"})",
-          "legendFormat": "Failures"
-        }
+        {"expr": "budget_runs_completed{job=\"scope_loadtest\"} / clamp_min(budget_runs_planned{job=\"scope_loadtest\"}, 1) * 100"}
       ],
-      "fieldConfig": {
-        "defaults": {
-          "thresholds": {
-            "steps": [
-              {"color": "green", "value": null},
-              {"color": "yellow", "value": 5},
-              {"color": "red", "value": 20}
-            ]
-          }
-        }
-      }
+      "fieldConfig": {"defaults": {"unit": "percent", "thresholds": {"steps": [{"color": "red", "value": null}, {"color": "yellow", "value": 50}, {"color": "green", "value": 80}]}}}
     },
     {
-      "title": "Per-Orchestrator",
+      "title": "Per-Pipeline Performance",
       "type": "row",
       "gridPos": {"h": 1, "w": 24, "x": 0, "y": 5},
-      "collapsed": false,
-      "panels": []
+      "collapsed": false
     },
     {
-      "title": "Orchestrator Performance",
-      "type": "table",
-      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 6},
-      "datasource": "${DS_PROMETHEUS}",
-      "targets": [
-        {
-          "expr": "budget_runs_completed{job=\"scope_loadtest\"}",
-          "legendFormat": "{{orchestrator_id}} completed",
-          "format": "table",
-          "instant": true
-        },
-        {
-          "expr": "budget_runs_planned{job=\"scope_loadtest\"}",
-          "legendFormat": "{{orchestrator_id}} planned",
-          "format": "table",
-          "instant": true
-        },
-        {
-          "expr": "histogram_quantile(0.5, rate(connect_duration_seconds_bucket{job=\"scope_loadtest\"}[1h]))",
-          "legendFormat": "{{orchestrator_id}} connect_p50",
-          "format": "table",
-          "instant": true
-        },
-        {
-          "expr": "stream_fps_out{job=\"scope_loadtest\"}",
-          "legendFormat": "{{orchestrator_id}} fps",
-          "format": "table",
-          "instant": true
-        }
-      ],
-      "transformations": [
-        {"id": "merge"},
-        {"id": "organize", "options": {"excludeByName": {"Time": true}}}
-      ]
-    },
-    {
-      "title": "Per-Pipeline",
-      "type": "row",
-      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 14},
-      "collapsed": false,
-      "panels": []
-    },
-    {
-      "title": "Pipeline Load Time (P50)",
+      "title": "Connect + Load Time (P50)",
+      "description": "Time from stream start to runner ready (includes orchestrator provisioning and pipeline loading)",
       "type": "bargauge",
-      "gridPos": {"h": 6, "w": 8, "x": 0, "y": 15},
+      "gridPos": {"h": 6, "w": 8, "x": 0, "y": 6},
       "datasource": "${DS_PROMETHEUS}",
       "targets": [
-        {
-          "expr": "histogram_quantile(0.5, sum by (pipeline, le) (rate(pipeline_load_seconds_bucket{job=\"scope_loadtest\"}[6h])))",
-          "legendFormat": "{{pipeline}}"
-        }
+        {"expr": "histogram_quantile(0.5, sum by (pipeline, le) (connect_duration_seconds_bucket{job=\"scope_loadtest\"}))", "legendFormat": "{{pipeline}}"}
       ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "s",
-          "thresholds": {
-            "steps": [
-              {"color": "green", "value": null},
-              {"color": "yellow", "value": 30},
-              {"color": "red", "value": 120}
-            ]
-          }
-        }
-      }
+      "fieldConfig": {"defaults": {"unit": "s", "thresholds": {"steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 30}, {"color": "red", "value": 120}]}}}
     },
     {
       "title": "First Frame Latency (P50)",
+      "description": "Time from runner ready to first output frame received",
       "type": "bargauge",
-      "gridPos": {"h": 6, "w": 8, "x": 8, "y": 15},
+      "gridPos": {"h": 6, "w": 8, "x": 8, "y": 6},
       "datasource": "${DS_PROMETHEUS}",
       "targets": [
-        {
-          "expr": "histogram_quantile(0.5, sum by (pipeline, mode, le) (rate(first_frame_seconds_bucket{job=\"scope_loadtest\"}[6h])))",
-          "legendFormat": "{{pipeline}}/{{mode}}"
-        }
+        {"expr": "histogram_quantile(0.5, sum by (pipeline, mode, le) (first_frame_seconds_bucket{job=\"scope_loadtest\"}))", "legendFormat": "{{pipeline}}/{{mode}}"}
       ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "s",
-          "thresholds": {
-            "steps": [
-              {"color": "green", "value": null},
-              {"color": "yellow", "value": 20},
-              {"color": "red", "value": 60}
-            ]
-          }
-        }
-      }
+      "fieldConfig": {"defaults": {"unit": "s", "thresholds": {"steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 5}, {"color": "red", "value": 30}]}}}
     },
     {
-      "title": "Steady-State FPS",
+      "title": "Frames Captured per Run",
+      "description": "Output frames captured during last session (proxy for throughput)",
       "type": "bargauge",
-      "gridPos": {"h": 6, "w": 8, "x": 16, "y": 15},
+      "gridPos": {"h": 6, "w": 8, "x": 16, "y": 6},
       "datasource": "${DS_PROMETHEUS}",
       "targets": [
-        {
-          "expr": "avg by (pipeline, mode) (stream_fps_out{job=\"scope_loadtest\"})",
-          "legendFormat": "{{pipeline}}/{{mode}}"
-        }
+        {"expr": "frames_captured{job=\"scope_loadtest\"}", "legendFormat": "{{pipeline}}/{{mode}}"}
       ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "fps",
-          "thresholds": {
-            "steps": [
-              {"color": "red", "value": null},
-              {"color": "yellow", "value": 6},
-              {"color": "green", "value": 10}
-            ]
-          }
-        }
-      }
+      "fieldConfig": {"defaults": {"thresholds": {"steps": [{"color": "red", "value": null}, {"color": "yellow", "value": 3}, {"color": "green", "value": 5}]}}}
     },
     {
       "title": "Latency Trends",
       "type": "row",
-      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 21},
-      "collapsed": false,
-      "panels": []
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 12},
+      "collapsed": false
+    },
+    {
+      "title": "Connect Time (7-day trend)",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 13},
+      "datasource": "${DS_PROMETHEUS}",
+      "targets": [
+        {"expr": "histogram_quantile(0.5, sum by (le) (connect_duration_seconds_bucket{job=\"scope_loadtest\"}))", "legendFormat": "P50"},
+        {"expr": "histogram_quantile(0.95, sum by (le) (connect_duration_seconds_bucket{job=\"scope_loadtest\"}))", "legendFormat": "P95"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "s", "custom": {"drawStyle": "line", "lineInterpolation": "smooth", "fillOpacity": 10, "showPoints": "auto"}}}
     },
     {
       "title": "First Frame Latency (7-day trend)",
       "type": "timeseries",
-      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 22},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 13},
       "datasource": "${DS_PROMETHEUS}",
       "targets": [
-        {
-          "expr": "histogram_quantile(0.5, sum by (le) (rate(first_frame_seconds_bucket{job=\"scope_loadtest\"}[1h])))",
-          "legendFormat": "P50"
-        },
-        {
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(first_frame_seconds_bucket{job=\"scope_loadtest\"}[1h])))",
-          "legendFormat": "P95"
-        },
-        {
-          "expr": "baseline_drift_percent{job=\"scope_loadtest\", metric_name=\"first_frame\"}",
-          "legendFormat": "Drift %"
-        }
+        {"expr": "histogram_quantile(0.5, sum by (le) (first_frame_seconds_bucket{job=\"scope_loadtest\"}))", "legendFormat": "P50"},
+        {"expr": "histogram_quantile(0.95, sum by (le) (first_frame_seconds_bucket{job=\"scope_loadtest\"}))", "legendFormat": "P95"}
       ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "s",
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "smooth",
-            "fillOpacity": 10,
-            "pointSize": 5,
-            "showPoints": "auto"
-          }
-        },
-        "overrides": [
-          {
-            "matcher": {"id": "byName", "options": "Drift %"},
-            "properties": [
-              {"id": "unit", "value": "percentunit"},
-              {"id": "custom.axisPlacement", "value": "right"}
-            ]
-          }
-        ]
-      }
+      "fieldConfig": {"defaults": {"unit": "s", "custom": {"drawStyle": "line", "lineInterpolation": "smooth", "fillOpacity": 10, "showPoints": "auto"}}}
     },
     {
       "title": "Error Breakdown",
       "type": "row",
-      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 30},
-      "collapsed": false,
-      "panels": []
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 21},
+      "collapsed": false
     },
     {
       "title": "Failures by Category",
+      "type": "piechart",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 22},
+      "datasource": "${DS_PROMETHEUS}",
+      "targets": [
+        {"expr": "sum by (category) (failures_total{job=\"scope_loadtest\"})", "legendFormat": "{{category}}"}
+      ],
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}}}
+    },
+    {
+      "title": "Failures by Scenario",
+      "type": "table",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 22},
+      "datasource": "${DS_PROMETHEUS}",
+      "targets": [
+        {"expr": "sum by (scenario, category) (failures_total{job=\"scope_loadtest\"}) > 0", "format": "table", "instant": true, "legendFormat": "{{scenario}} ({{category}})"}
+      ],
+      "transformations": [
+        {"id": "organize", "options": {"excludeByName": {"Time": true}}}
+      ]
+    },
+    {
+      "title": "Run Results by Scenario",
+      "type": "row",
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 30},
+      "collapsed": false
+    },
+    {
+      "title": "Runs by Scenario (Pass/Fail)",
       "type": "barchart",
       "gridPos": {"h": 8, "w": 24, "x": 0, "y": 31},
       "datasource": "${DS_PROMETHEUS}",
       "targets": [
-        {
-          "expr": "sum by (category) (increase(failures_total{job=\"scope_loadtest\"}[6h]))",
-          "legendFormat": "{{category}}"
-        }
+        {"expr": "sum by (scenario) (runs_total{job=\"scope_loadtest\", result=\"pass\"})", "legendFormat": "{{scenario}} pass"},
+        {"expr": "sum by (scenario) (runs_total{job=\"scope_loadtest\", result=\"fail\"})", "legendFormat": "{{scenario}} fail"}
       ],
-      "fieldConfig": {
-        "defaults": {
-          "custom": {
-            "stacking": {"mode": "normal"}
-          },
-          "color": {"mode": "palette-classic"}
-        }
-      },
-      "options": {
-        "orientation": "auto",
-        "barWidth": 0.5,
-        "groupWidth": 0.7
-      }
+      "fieldConfig": {"defaults": {"custom": {"stacking": {"mode": "normal"}}, "color": {"mode": "palette-classic"}}},
+      "options": {"orientation": "horizontal", "barWidth": 0.5}
     },
     {
       "title": "Budget & Coverage",
       "type": "row",
       "gridPos": {"h": 1, "w": 24, "x": 0, "y": 39},
-      "collapsed": false,
-      "panels": []
+      "collapsed": false
     },
     {
-      "title": "Daily Budget Consumed per Orchestrator",
+      "title": "Budget Progress",
       "type": "bargauge",
-      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 40},
+      "gridPos": {"h": 6, "w": 12, "x": 0, "y": 40},
       "datasource": "${DS_PROMETHEUS}",
       "targets": [
-        {
-          "expr": "budget_runs_completed{job=\"scope_loadtest\"} / budget_runs_planned{job=\"scope_loadtest\"} * 100",
-          "legendFormat": "{{orchestrator_id}}"
-        }
+        {"expr": "budget_runs_completed{job=\"scope_loadtest\"}", "legendFormat": "Completed"},
+        {"expr": "budget_runs_planned{job=\"scope_loadtest\"}", "legendFormat": "Planned"}
       ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "percent",
-          "min": 0,
-          "max": 100,
-          "thresholds": {
-            "steps": [
-              {"color": "red", "value": null},
-              {"color": "yellow", "value": 50},
-              {"color": "green", "value": 80}
-            ]
-          }
-        }
-      }
+      "fieldConfig": {"defaults": {"thresholds": {"steps": [{"color": "red", "value": null}, {"color": "yellow", "value": 5}, {"color": "green", "value": 9}]}}}
+    },
+    {
+      "title": "Run Duration",
+      "type": "timeseries",
+      "gridPos": {"h": 6, "w": 12, "x": 12, "y": 40},
+      "datasource": "${DS_PROMETHEUS}",
+      "targets": [
+        {"expr": "histogram_quantile(0.5, sum by (le) (run_duration_seconds_bucket{job=\"scope_loadtest\"}))", "legendFormat": "P50"},
+        {"expr": "histogram_quantile(0.95, sum by (le) (run_duration_seconds_bucket{job=\"scope_loadtest\"}))", "legendFormat": "P95"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "s", "custom": {"drawStyle": "line", "showPoints": "auto"}}}
     }
   ],
   "refresh": "1m",
@@ -355,15 +205,6 @@
   "tags": ["scope", "loadtest", "livepeer"],
   "templating": {
     "list": [
-      {
-        "name": "orchestrator_id",
-        "type": "query",
-        "datasource": "${DS_PROMETHEUS}",
-        "query": "label_values(runs_total{job=\"scope_loadtest\"}, orchestrator_id)",
-        "includeAll": true,
-        "multi": true,
-        "current": {"selected": true, "text": "All", "value": "$__all"}
-      },
       {
         "name": "pipeline",
         "type": "query",
@@ -385,9 +226,8 @@
     ]
   },
   "time": {"from": "now-24h", "to": "now"},
-  "timepicker": {},
   "timezone": "utc",
   "title": "Scope Load Testing",
   "uid": "scope-loadtest",
-  "version": 1
+  "version": 2
 }
