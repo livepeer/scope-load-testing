@@ -101,26 +101,34 @@ class SDKExecutor:
                     else:
                         raise TimeoutError("Runner not ready after 10 min")
 
-                    # 3. Start publishing for v2v/i2v
+                    # 3. Start publishing frames
+                    # For v2v/i2v: publish synthetic video at ~10fps
+                    # For t2v: publish a keepalive frame every 30s to prevent
+                    # the SDK reaper from killing the stream (idle >2min = death)
                     publish_seq = 0
                     width = scenario.parameters.get("width", 512)
                     height = scenario.parameters.get("height", 512)
                     video_style = select_video_style()
-                    logger.info("Video input style: %s", video_style)
 
                     if scenario.mode in ("v2v", "i2v"):
-                        async def _publisher():
-                            nonlocal publish_seq
-                            while not publish_stop.is_set():
-                                frame = make_input_frame(width, height, publish_seq, style=video_style)
-                                try:
-                                    await client.stream_publish(stream_id, frame, publish_seq)
-                                    publish_seq += 1
-                                except Exception:
-                                    pass
-                                await asyncio.sleep(0.1)
+                        publish_interval = 0.1  # ~10fps
+                        logger.info("Publishing v2v frames (style=%s, ~10fps)", video_style)
+                    else:
+                        publish_interval = 30.0  # keepalive every 30s for t2v
+                        logger.info("Publishing t2v keepalive frames every 30s")
 
-                        publish_task = asyncio.create_task(_publisher())
+                    async def _publisher():
+                        nonlocal publish_seq
+                        while not publish_stop.is_set():
+                            frame = make_input_frame(width, height, publish_seq, style=video_style)
+                            try:
+                                await client.stream_publish(stream_id, frame, publish_seq)
+                                publish_seq += 1
+                            except Exception:
+                                pass
+                            await asyncio.sleep(publish_interval)
+
+                    publish_task = asyncio.create_task(_publisher())
 
                     # 4. Wait for first output frame
                     ff_start = time.monotonic()
@@ -140,16 +148,26 @@ class SDKExecutor:
                     prompt_idx = 0
                     last_prompt_switch = stream_start
                     check_interval = thresholds.frame_check_interval_s
+                    consecutive_404 = 0
+                    max_consecutive_404 = 6  # 6 * check_interval = ~3min of 404s before giving up
 
                     while time.monotonic() - stream_start < duration_s:
                         await asyncio.sleep(check_interval)
                         elapsed = time.monotonic() - stream_start
 
-                        # Status check (transient 404 is OK)
+                        # Status check — fail after too many consecutive 404s
                         status = await client.stream_status(stream_id)
                         if status is None:
-                            logger.warning("Stream %s returned 404, retrying...", stream_id)
+                            consecutive_404 += 1
+                            if consecutive_404 >= max_consecutive_404:
+                                raise RuntimeError(
+                                    f"Stream {stream_id} gone — {consecutive_404} consecutive 404s "
+                                    f"({consecutive_404 * check_interval}s). "
+                                    f"Likely killed by SDK reaper (t2v idle timeout)."
+                                )
+                            logger.warning("Stream %s returned 404 (%d/%d)", stream_id, consecutive_404, max_consecutive_404)
                             continue
+                        consecutive_404 = 0
 
                         # Frame capture + validation
                         try:
