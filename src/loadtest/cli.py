@@ -67,8 +67,9 @@ def run(ctx: click.Context, scenario: str, sdk_url: str, api_key: str):
 
     # Report to Daydream /v1/metrics (network_events)
     metrics_url = os.environ.get("METRICS_URL", "https://api.daydream.monster/v1/metrics")
+    metrics_api_key = os.environ.get("METRICS_API_KEY") or api_key
     from .metrics_reporter import MetricsReporter, build_run_events
-    reporter = MetricsReporter(api_key=api_key, metrics_url=metrics_url)
+    reporter = MetricsReporter(api_key=metrics_api_key, metrics_url=metrics_url)
     reporter.enqueue_many(build_run_events(result, prompt_pool=pool_name))
     accepted = asyncio.run(reporter.flush())
     if accepted:

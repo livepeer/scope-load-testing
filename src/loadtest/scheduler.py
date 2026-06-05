@@ -92,11 +92,12 @@ async def run_scheduler(
 
     push_url = os.environ.get("PUSHGATEWAY_URL") or None
     metrics_url = os.environ.get("METRICS_URL", "https://api.daydream.monster/v1/metrics")
+    metrics_api_key = os.environ.get("METRICS_API_KEY") or api_key
 
     coverage = CoverageTracker(data_dir / "coverage.json")
     baseline_store = BaselineStore(data_dir / "baselines.json", data_dir / "history.json")
     metrics = MetricsCollector(push_url=push_url)
-    reporter = MetricsReporter(api_key=api_key, metrics_url=metrics_url)
+    reporter = MetricsReporter(api_key=metrics_api_key, metrics_url=metrics_url)
     executor = SDKExecutor(config)
 
     # Calculate runs per day
