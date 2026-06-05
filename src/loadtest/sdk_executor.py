@@ -15,6 +15,7 @@ from .results import (
 )
 from .scenarios import Scenario
 from .sdk_client import SDKClient
+from .trickle_reader import TrickleEventsReader
 from .validators import FrameCheckResult, check_prompt_sensitivity, validate_frame
 
 logger = logging.getLogger(__name__)
@@ -52,6 +53,7 @@ class SDKExecutor:
         stream_id = None
         publish_stop = asyncio.Event()
         publish_task = None
+        trickle_reader: TrickleEventsReader | None = None
 
         try:
             async with asyncio.timeout(max_duration):
@@ -78,6 +80,13 @@ class SDKExecutor:
 
                     stream_data = await client.stream_start(params)
                     stream_id = stream_data["stream_id"]
+
+                    # Start trickle events reader if events_url is available
+                    events_url = stream_data.get("events_url")
+                    if events_url:
+                        trickle_reader = TrickleEventsReader(events_url)
+                        trickle_reader.start()
+                        logger.info("Trickle events reader started: %s", events_url)
 
                     # 2. Wait for runner (404 is normal briefly during provisioning)
                     not_found_count = 0
@@ -221,6 +230,24 @@ class SDKExecutor:
                     await publish_task
                 except asyncio.CancelledError:
                     pass
+
+            # Stop trickle reader and collect metrics
+            if trickle_reader is not None:
+                await trickle_reader.stop()
+                tm = trickle_reader.metrics
+                logger.info(
+                    "Trickle: %d events, %d telemetry, %d media_stats, runner_ready=%s",
+                    len(tm.all_events), len(tm.telemetry_events),
+                    len(tm.media_stats), tm.runner_ready,
+                )
+                # Attach trickle data to result labels for metrics reporting
+                result.labels["trickle_events"] = str(len(tm.all_events))
+                result.labels["trickle_telemetry"] = str(len(tm.telemetry_events))
+                result.labels["trickle_media_stats"] = str(len(tm.media_stats))
+                if tm.telemetry_events:
+                    result.labels["has_runtime_telemetry"] = "true"
+                # Store raw trickle metrics for the reporter
+                result.labels["_trickle_metrics"] = tm
 
             if stream_id:
                 try:
