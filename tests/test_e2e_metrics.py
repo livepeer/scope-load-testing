@@ -1,9 +1,15 @@
 """E2E test for Daydream /v1/metrics endpoint.
 
-Skipped unless DAYDREAM_API_KEY is set. Tests against the live endpoint
-(METRICS_URL env var or default api.daydream.monster).
+Skipped unless DAYDREAM_API_KEY is set. Configure via env vars:
 
-Run: DAYDREAM_API_KEY=sk_... pytest tests/test_e2e_metrics.py -v
+    DAYDREAM_API_KEY  — required, Daydream API key
+    METRICS_URL       — optional, defaults to api.daydream.monster
+    METRICS_API_KEY   — optional, separate key for metrics endpoint
+                        (useful for preview/staging environments)
+
+Run:
+    DAYDREAM_API_KEY=sk_... pytest tests/test_e2e_metrics.py -v
+    METRICS_URL=https://pipelines-api-staging.fly.dev DAYDREAM_API_KEY=sk_... pytest tests/test_e2e_metrics.py -v
 """
 
 import os
@@ -14,23 +20,33 @@ import pytest
 import httpx
 
 METRICS_URL = os.environ.get("METRICS_URL", "https://api.daydream.monster/v1/metrics")
-API_KEY = os.environ.get("DAYDREAM_API_KEY", "")
+API_KEY = os.environ.get("METRICS_API_KEY") or os.environ.get("DAYDREAM_API_KEY", "")
 
 skip_no_key = pytest.mark.skipif(not API_KEY, reason="DAYDREAM_API_KEY not set")
 
-# The /v1/metrics endpoint requires PR livepeer/pipelines#2691 to be deployed.
-# Until then, live endpoint tests are expected to fail with 502.
-xfail_endpoint_not_deployed = pytest.mark.xfail(
-    reason="v1/metrics endpoint not yet deployed (PR pipelines#2691)",
-    strict=False,
-)
+
+async def _probe_endpoint() -> bool:
+    """Check if the metrics endpoint is reachable and not returning 502."""
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                METRICS_URL,
+                json={"app": "probe", "events": [{"type": "probe", "data": {}}]},
+                headers={"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"},
+            )
+            # 200, 400, 401, 429 = endpoint exists. 502 = not deployed.
+            return resp.status_code != 502
+    except Exception:
+        return False
 
 
 @skip_no_key
-@xfail_endpoint_not_deployed
 @pytest.mark.asyncio
 async def test_metrics_endpoint_accepts_loadtest_events():
     """Send a test batch and verify 200 accepted."""
+    if not await _probe_endpoint():
+        pytest.xfail("v1/metrics endpoint not deployed (502)")
+
     event_id = f"e2e-test-{uuid.uuid4().hex[:8]}"
     ts = str(int(time.time() * 1000))
 
@@ -55,10 +71,7 @@ async def test_metrics_endpoint_accepts_loadtest_events():
         resp = await client.post(
             METRICS_URL,
             json=payload,
-            headers={
-                "Authorization": f"Bearer {API_KEY}",
-                "Content-Type": "application/json",
-            },
+            headers={"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"},
         )
 
     assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text}"
@@ -68,10 +81,12 @@ async def test_metrics_endpoint_accepts_loadtest_events():
 
 
 @skip_no_key
-@xfail_endpoint_not_deployed
 @pytest.mark.asyncio
 async def test_metrics_endpoint_rejects_no_auth():
     """Verify 401 without auth header."""
+    if not await _probe_endpoint():
+        pytest.xfail("v1/metrics endpoint not deployed (502)")
+
     async with httpx.AsyncClient(timeout=30.0) as client:
         resp = await client.post(
             METRICS_URL,
@@ -82,18 +97,17 @@ async def test_metrics_endpoint_rejects_no_auth():
 
 
 @skip_no_key
-@xfail_endpoint_not_deployed
 @pytest.mark.asyncio
 async def test_metrics_endpoint_rejects_empty_events():
     """Verify 400 for empty events array."""
+    if not await _probe_endpoint():
+        pytest.xfail("v1/metrics endpoint not deployed (502)")
+
     async with httpx.AsyncClient(timeout=30.0) as client:
         resp = await client.post(
             METRICS_URL,
             json={"app": "test", "events": []},
-            headers={
-                "Authorization": f"Bearer {API_KEY}",
-                "Content-Type": "application/json",
-            },
+            headers={"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"},
         )
     assert resp.status_code == 400
 
@@ -120,10 +134,12 @@ async def test_client_source_is_scope_loadtest():
 
 
 @skip_no_key
-@xfail_endpoint_not_deployed
 @pytest.mark.asyncio
 async def test_full_reporter_flow():
     """Test MetricsReporter enqueue + flush against live endpoint."""
+    if not await _probe_endpoint():
+        pytest.xfail("v1/metrics endpoint not deployed (502)")
+
     from loadtest.metrics_reporter import MetricsReporter, build_run_events
     from loadtest.results import RunResult, PhaseTimings
 
