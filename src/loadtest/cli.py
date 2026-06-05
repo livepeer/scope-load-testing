@@ -56,7 +56,7 @@ def run(ctx: click.Context, scenario: str, sdk_url: str, api_key: str):
     executor = SDKExecutor(config)
     result = asyncio.run(executor.run(sdk_url, api_key, sc, prompts))
 
-    # Push metrics if push gateway configured
+    # Push Prometheus metrics if push gateway configured
     push_url = os.environ.get("PUSHGATEWAY_URL")
     if push_url:
         from .metrics import MetricsCollector
@@ -64,6 +64,15 @@ def run(ctx: click.Context, scenario: str, sdk_url: str, api_key: str):
         metrics.record_run(result)
         metrics.push()
         click.echo(f"  Metrics pushed to {push_url}")
+
+    # Report to Daydream /v1/metrics (network_events)
+    metrics_url = os.environ.get("METRICS_URL", "https://api.daydream.monster/v1/metrics")
+    from .metrics_reporter import MetricsReporter, build_run_events
+    reporter = MetricsReporter(api_key=api_key, metrics_url=metrics_url)
+    reporter.enqueue_many(build_run_events(result, prompt_pool=pool_name))
+    accepted = asyncio.run(reporter.flush())
+    if accepted:
+        click.echo(f"  Events reported to {metrics_url} ({accepted} accepted)")
 
     if result.passed:
         click.echo(f"PASS: {sc.name} ({result.timings.total_s:.1f}s)")

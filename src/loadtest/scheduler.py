@@ -11,6 +11,7 @@ from .config import LoadTestConfig
 from .coverage import CoverageTracker
 from .datasets import select_prompts
 from .metrics import MetricsCollector
+from .metrics_reporter import MetricsReporter, build_run_events
 from .regression import BaselineStore, check_drift, update_baseline
 from .results import RunResult, cleanup_old_failures
 from .scenarios import Scenario, expand_scenario_matrix
@@ -90,10 +91,12 @@ async def run_scheduler(
         return
 
     push_url = os.environ.get("PUSHGATEWAY_URL") or None
+    metrics_url = os.environ.get("METRICS_URL", "https://api.daydream.monster/v1/metrics")
 
     coverage = CoverageTracker(data_dir / "coverage.json")
     baseline_store = BaselineStore(data_dir / "baselines.json", data_dir / "history.json")
     metrics = MetricsCollector(push_url=push_url)
+    reporter = MetricsReporter(api_key=api_key, metrics_url=metrics_url)
     executor = SDKExecutor(config)
 
     # Calculate runs per day
@@ -176,7 +179,7 @@ async def run_scheduler(
                     drift.pipeline_load_drift_pct * 100,
                 )
 
-        # Push metrics
+        # Push Prometheus metrics
         metrics.record_run(result)
 
         # Update budget gauges
@@ -185,6 +188,10 @@ async def run_scheduler(
         metrics.update_budget("sdk", sdk_entry.get("runs_planned", 0), sdk_entry.get("runs_completed", 0))
 
         metrics.push()
+
+        # Report to Daydream /v1/metrics (network_events)
+        reporter.enqueue_many(build_run_events(result, prompt_pool=pool_name))
+        await reporter.flush()
 
         status = "PASS" if result.passed else f"FAIL [{result.error_category}]"
         logger.info(
