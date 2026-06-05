@@ -179,6 +179,18 @@ def build_run_events(
         completed_data["error_category"] = result.error_category.value if result.error_category else None
         completed_data["error_message"] = result.error_message
 
+    # Add trickle channel metrics if available
+    trickle = result.labels.get("_trickle_metrics")
+    if trickle and hasattr(trickle, "all_events"):
+        completed_data["trickle_events_count"] = len(trickle.all_events)
+        completed_data["trickle_telemetry_count"] = len(trickle.telemetry_events)
+        completed_data["trickle_runner_ready"] = trickle.runner_ready
+        completed_data["trickle_pipeline_loaded"] = trickle.pipeline_loaded
+        if trickle.latest_media_stats:
+            completed_data["media_stats"] = trickle.latest_media_stats
+        if trickle.telemetry_events:
+            completed_data["runtime_telemetry"] = trickle.telemetry_events[:5]  # cap at 5
+
     events.append({
         "type": "loadtest_run_completed",
         "timestamp": _ts(),
