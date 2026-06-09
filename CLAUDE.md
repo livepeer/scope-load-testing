@@ -2,370 +2,195 @@
 
 ## Project Overview
 
-This repo contains a load testing harness for Daydream Scope cloud inference on the Livepeer network. The harness is a lightweight Python service (no ML dependencies) that drives Scope local instances via HTTP API to test end-to-end cloud inference through Livepeer orchestrators.
-
-**Architecture:** The harness runs in Docker containers alongside one or more Scope instances. Each Scope instance connects to a Livepeer orchestrator for remote GPU inference. The harness drives test scenarios via Scope's HTTP API and pushes metrics to Grafana via Prometheus.
+Automated load testing harness for Daydream Scope cloud inference on the Livepeer network. Lightweight Python service (no ML deps) that drives streams via the Daydream SDK service, validates output, and reports metrics.
 
 ```
-loadtest-harness (lightweight Python, httpx only)
-  → Scope instance(s) (daydream-scope, no local GPU)
-    → Livepeer orchestrator(s) (remote GPU inference)
-      → metrics → Prometheus push gateway → Grafana
+loadtest CLI → Daydream SDK (sdk.daydream.monster) → Livepeer Orchestrator → Scope Runner (GPU)
+                                                                              ↕ trickle events channel
+  metrics → Prometheus push gateway → Grafana                                 ↕ telemetry (PR 1040)
+  events  → POST /v1/metrics → Kafka → ClickHouse (network_events)
 ```
+
+## Current State (2026-06-09)
+
+### What's deployed and working
+
+- **GCP VM** `loadtest-staging-1` (us-central1-a, IP: 104.197.233.56) — managed by Pulumi
+- **Docker stack**: harness + pushgateway + prometheus + promtail + SDK
+- **Scheduler**: runs 16 scenarios continuously (9 runs/day at 20% budget)
+- **Metrics**: Prometheus push gateway (:9091) + Daydream `/v1/metrics` (staging)
+- **Grafana**: dashboard at `eu-metrics-monitoring.livepeer.live` (import `dashboards/grafana/scope-loadtest.json`)
+
+### Open issues / blockers
+
+1. **Trickle telemetry not flowing yet** — `trickle_reader.py` is merged but needs orchestrators with PR daydreamlive/scope#1040 (`orch-prod-scope-1`, `orch-prod-scope-vast-1`). These are behind Cloudflare and unreachable on port 8935 from the GCP VM. Pulumi team needs to configure networking (origin IPs, firewall rules, or add to discovery JSON). The code is ready — just needs connectivity.
+
+2. **v1/metrics → ClickHouse gap** — PR livepeer/pipelines#2691 deployed to staging (`pipelines-api-staging.fly.dev`), events accepted (HTTP 200), but staging Kafka doesn't have ClickPipes to ClickHouse. Production API (`pipelines-api.fly.dev`) doesn't have the route yet (PR not merged to main). Need PR 2691 merged to production, or ClickPipes configured for staging Kafka.
+
+3. **Per-segment payment bug** — `WARNING No running event loop; per-segment payments not started` fires before every stream. The `livepeer-python-gateway` `start_scope()` runs in a worker thread without an event loop. Payments may not be sending, which could explain mid-stream drops at seq ~156 on orch-prod-1.
+
+4. **Signer outages** — intermittent 503 from `signer.daydream.live` causes stream start failures. The harness handles this (classifies as `orchestrator` error) but it inflates failure rate.
+
+### Recent test results (staging orchestrators)
+
+| Scenario | Status | Connect | First Frame |
+|----------|--------|---------|-------------|
+| longlive_t2v_1m | PASS | 8-107s (warm/cold) | 0.4-1.6s |
+| longlive_v2v_1m | PASS | 7-13s (warm) | 0.1-0.6s |
+| longlive_v2v_5m | PASS | 13s | 0.2s |
+| longlive_v2v_15m | PASS | 13s | 0.5s |
+| ltx2_t2v_1m | PASS | 109s (cold) | 1.1s |
 
 ## Development Commands
 
 ```bash
-docker compose up -d                    # Start full stack (harness + scope + prometheus)
-docker compose up -d --scale scope=3    # Start with 3 Scope instances
-docker compose down                     # Stop everything
-docker compose logs -f harness          # Follow harness logs
-docker compose logs -f scope-1          # Follow specific scope instance
+# Local dev
+pip install -e ".[dev]"
+pytest                                     # 135+ unit tests
+pytest tests/test_e2e_metrics.py -v        # e2e (needs DAYDREAM_API_KEY + METRICS_API_KEY)
+loadtest scenarios                         # list all 16 scenarios
+loadtest run --scenario longlive_v2v_1m    # single test run
+loadtest schedule                          # start scheduler daemon
+loadtest datasets                          # show dataset health
+loadtest coverage                          # today's coverage
+loadtest baselines                         # 7-day rolling baselines
 
-# Local dev (without Docker)
-pip install -e ".[dev]"                 # Install harness with dev deps
-pytest                                  # Run harness unit tests
-python -m loadtest.cli run              # Run a single test cycle
-python -m loadtest.cli schedule         # Start the scheduler daemon
+# Docker
+docker compose up -d                       # start scheduler + pushgateway
+docker compose run --rm harness run --scenario longlive_v2v_1m
+docker compose logs -f harness
+
+# On the VM
+gcloud compute ssh loadtest-staging-1-261b5c6 --zone=us-central1-a
+cd /opt/scope-load-testing
+sudo docker compose run --rm harness run --scenario longlive_t2v_1m
+sudo docker logs scope-load-testing-harness-1 --tail 50
+sudo docker logs sdk --tail 50
 ```
 
-## Scope HTTP API Reference
+## Environment Variables
 
-All endpoints are relative to a Scope instance base URL (e.g., `http://scope-1:8000`).
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `DAYDREAM_API_KEY` | Yes | - | Daydream API key (for SDK stream start) |
+| `SDK_URL` | No | `https://sdk.daydream.monster` | SDK service URL (VM uses `http://sdk:8000`) |
+| `METRICS_URL` | No | `https://api.daydream.monster/v1/metrics` | Pipelines API metrics endpoint |
+| `METRICS_API_KEY` | No | Falls back to `DAYDREAM_API_KEY` | Pipelines API key (separate auth system, `sk_ccY5...`) |
+| `PUSHGATEWAY_URL` | No | `http://pushgateway:9091` | Prometheus push gateway |
 
-### Core Lifecycle
+### Two auth systems
 
-| Operation | Method | Path | Body |
-|-----------|--------|------|------|
-| Health | GET | `/health` | - |
-| Cloud connect | POST | `/api/v1/cloud/connect` | `{"app_id": "...", "api_key": "...", "user_id": "..."}` |
-| Cloud status | GET | `/api/v1/cloud/status` | - |
-| Cloud disconnect | POST | `/api/v1/cloud/disconnect` | - |
-| Resolve workflow | POST | `/api/v1/workflow/resolve` | `{"nodes": [...]}` |
-| Load pipeline(s) | POST | `/api/v1/pipeline/load` | `{"pipeline_ids": ["longlive"]}` |
-| Pipeline status | GET | `/api/v1/pipeline/status` | - |
-| Start session | POST | `/api/v1/session/start` | See session body formats below |
-| Session metrics | GET | `/api/v1/session/metrics` | - |
-| Capture frame | GET | `/api/v1/session/frame?sink_node_id=output&quality=85` | - (returns JPEG) |
-| Update parameters | POST | `/api/v1/session/parameters` | `{"prompts": [...], "noise_scale": 0.5}` |
-| Get parameters | GET | `/api/v1/session/parameters` | - |
-| Stop session | POST | `/api/v1/session/stop` | - |
-| Get logs | GET | `/api/v1/logs/tail?lines=50` | - |
+| System | Keys | Used by |
+|--------|------|---------|
+| Daydream API (`api.daydream.live`) | `sk_fXw...`, `sk_MVU...` | SDK streams, signer |
+| Pipelines API (`api.daydream.monster`) | `sk_ccY5...` (created at `app.daydream.monster`) | `/v1/metrics` endpoint |
 
-### Recording Endpoints
+## Architecture
 
-| Operation | Method | Path |
-|-----------|--------|------|
-| Start recording | POST | `/api/v1/recordings/headless/start?node_id=<id>` |
-| Stop recording | POST | `/api/v1/recordings/headless/stop?node_id=<id>` |
-| Download recording | GET | `/api/v1/recordings/headless?node_id=<id>` (returns MP4) |
+### How the harness works (SDK path)
 
-### Session Start Body Formats
+1. `POST sdk/stream/start` → gets `stream_id`, `events_url`, channel URLs
+2. Starts `TrickleEventsReader` on `events_url` (background, reads telemetry)
+3. Publishes input frames (v2v at 10fps, t2v keepalive at 30s interval)
+4. Waits for first output frame via `GET sdk/stream/{id}/frame`
+5. Monitoring loop: capture frames, validate quality, switch prompts, check stalls
+6. Stops stream, collects trickle metrics, reports results
 
-**Text-to-video (t2v) — single pipeline:**
-```json
-{
-  "pipeline_id": "longlive",
-  "input_mode": "text",
-  "prompts": [{"text": "a forest in winter", "weight": 100}]
-}
+### Key modules
+
+| Module | Purpose |
+|--------|---------|
+| `sdk_executor.py` | Full test lifecycle via SDK (connect→publish→monitor→stop) |
+| `sdk_client.py` | Typed async HTTP client for SDK service |
+| `trickle_reader.py` | Background reader for trickle events channel (telemetry from runner) |
+| `metrics_reporter.py` | Reports events to `/v1/metrics` with `client_source: "scope-loadtest"` |
+| `metrics.py` | Prometheus metrics (push gateway, `pushadd_to_gateway` for accumulation) |
+| `scheduler.py` | Continuous scheduler (budget, round-robin scenarios, drift detection) |
+| `scenarios.py` | Scenario matrix expansion from config |
+| `datasets.py` | Random prompt pool rotation, synthetic video frame generation |
+| `validators.py` | Frame quality (black/corrupt/size), prompt sensitivity (pixel diff) |
+| `regression.py` | 7-day rolling baselines, drift detection (>20% = alert) |
+| `coverage.py` | Daily per-orchestrator coverage tracking (JSON, pruned to 30 days) |
+| `results.py` | RunResult, error taxonomy (network/orchestrator/runner/protocol) |
+| `config.py` | YAML config loading, validation |
+| `discovery.py` | Orchestrator discovery, health tracking, blacklist |
+
+### Trickle events channel (PR daydreamlive/scope#1040)
+
+When connected to orchestrators with PR 1040 deployed, the runner sends telemetry via trickle:
+```
+Runner → publish_event("stream_heartbeat") → TrickleEventsSink → trickle events channel
+  → {"type": "telemetry", "event": {id, type: "stream_trace", data: {type: "stream_heartbeat", ...}}}
+    → TrickleEventsReader reads HTTP segments at {events_url}/{seq}
+      → TrickleMetrics (runner_ready, media_stats, telemetry_events)
 ```
 
-**Video-to-video (v2v) — single pipeline:**
-```json
-{
-  "pipeline_id": "longlive",
-  "input_mode": "video",
-  "input_source": {
-    "enabled": true,
-    "source_type": "video_file",
-    "source_name": "/data/videos/test.mp4"
-  }
-}
+**Orchestrators with PR 1040:** `orch-prod-scope-1.daydream.live`, `orch-prod-scope-vast-1.daydream.live`
+**Without PR 1040:** `orch-prod-1.daydream.live`, `orch-prod-2.daydream.live` (only lifecycle events, no telemetry)
+
+### Metrics reporting to ClickHouse
+
+Events are sent to `POST /v1/metrics` (PR livepeer/pipelines#2691) with `client_source: "scope-loadtest"`:
+
+```sql
+-- ClickHouse query for load test events
+SELECT * FROM network_events.network_events
+WHERE JSONExtractString(data, 'client_source') = 'scope-loadtest'
+ORDER BY timestamp DESC LIMIT 10
 ```
 
-**Graph mode (multi-pipeline):**
-```json
-{
-  "input_mode": "video",
-  "graph": {
-    "nodes": [
-      {"id": "input", "type": "source", "source_mode": "video_file", "source_name": "/data/videos/test.mp4"},
-      {"id": "depth", "type": "pipeline", "pipeline_id": "video-depth-anything"},
-      {"id": "longlive", "type": "pipeline", "pipeline_id": "longlive"},
-      {"id": "rife", "type": "pipeline", "pipeline_id": "rife"},
-      {"id": "output", "type": "sink"},
-      {"id": "record", "type": "record"}
-    ],
-    "edges": [
-      {"from": "input", "from_port": "video", "to_node": "depth", "to_port": "video", "kind": "stream"},
-      {"from": "depth", "from_port": "video", "to_node": "longlive", "to_port": "vace_input_frames", "kind": "stream"},
-      {"from": "input", "from_port": "video", "to_node": "longlive", "to_port": "video", "kind": "stream"},
-      {"from": "longlive", "from_port": "video", "to_node": "rife", "to_port": "video", "kind": "stream"},
-      {"from": "rife", "from_port": "video", "to_node": "output", "to_port": "video", "kind": "stream"},
-      {"from": "rife", "from_port": "video", "to_node": "record", "to_port": "video", "kind": "stream"}
-    ]
-  }
-}
-```
+Event types: `loadtest_run_started`, `loadtest_run_completed` (includes timings, pass/fail, trickle data)
 
-**Critical:** `input_mode: "video"` is required for video file sources. Without it, frames don't flow.
+## Scenarios (16 total, config-driven)
 
-### Session Metrics Response Shape
+Generated from `config/default.yaml` matrix. Adding a pipeline = one YAML entry, no code.
 
-```json
-{
-  "sessions": {
-    "headless": {
-      "fps_in": 30.0,
-      "fps_out": 10.5,
-      "pipeline_fps": 8.2,
-      "frames_in": 150,
-      "frames_out": 50,
-      "elapsed_seconds": 15.0,
-      "headless": true
-    }
-  },
-  "gpu": {
-    "vram_allocated_mb": 8192.5,
-    "vram_reserved_mb": 10240.0,
-    "vram_total_mb": 81920.0
-  }
-}
-```
+| Pipeline | Modes | Durations |
+|----------|-------|-----------|
+| longlive | t2v, v2v, i2v | 1m, 5m, 15m |
+| ltx2 | t2v, i2v | 1m, 5m |
+| longlive+rife | v2v | 5m, 15m |
+| depth+longlive+rife | v2v | 5m |
 
-### Cloud Status Response Shape
+## Datasets
 
-```json
-{
-  "connected": true,
-  "connecting": false,
-  "error": null,
-  "webrtc_connected": true,
-  "app_id": "daydream/scope-livepeer--prod/ws",
-  "connection_id": "abc123",
-  "credentials_configured": true,
-  "stats": {
-    "frames_to_cloud": 1000,
-    "frames_from_cloud": 950,
-    "cloud_fps_in": 30.0,
-    "cloud_fps_out": 10.0
-  },
-  "last_close_code": null,
-  "last_close_reason": null
-}
-```
+11 prompt pools (220 unique prompts, 0 duplicates): nature, urban, abstract, stress, people, animals, weather, scifi, fantasy, food, motion. Each run picks a random pool and shuffles.
 
-## Scope Pipeline Reference
+3 synthetic video styles for v2v/i2v: gradient, noise, blocks. Randomly selected per run.
 
-### Top Pipelines (by usage)
+Dataset management: `config/datasets/manifest.yaml` tracks all assets. Use the `enrich-datasets` skill (`.claude/skills/enrich-datasets.md`) to add more via storyboard MCP.
 
-| Pipeline | Mode | VRAM | Description |
-|----------|------|------|-------------|
-| `longlive` | t2v, v2v, i2v | ~20GB | Autoregressive video diffusion (Wan2.1 1.3B base) |
-| `ltx2` | t2v, i2v | varies | LTX-2 video generation (installed as plugin `scope-ltx-2`) |
-| `video-depth-anything` | v2v | ~1GB | Depth estimation preprocessor |
-| `rife` | v2v | ~0.5GB | Frame interpolation (doubles FPS) |
+## VM Infrastructure
 
-### Common Graph Configurations
+**VM:** `loadtest-staging-1-261b5c6` (us-central1-a) — managed by Pulumi (`simple-infra/staging` stack)
 
-1. **longlive** (standalone) — 80.8% of sessions
-2. **video-depth → longlive → rife** — 84.4% success rate
-3. **longlive → rife** — 84.9% success rate
-4. **ltx2** (standalone, plugin) — 44.5% success rate
+**Docker compose override:** `/opt/scope-load-testing/docker-compose.override.yml` — sets SDK config, orchestrator URLs, metrics keys. Pulumi manages this file.
 
-### Pipeline Modes
+**SDK container:** runs local `sdk.daydream.monster` equivalent, configured with:
+- `LV2V_ORCH_URLS` — which orchestrators to use
+- `SIGNER_URL` — payment signer
+- `DISCOVERY_URL` — orchestrator discovery JSON
 
-- **t2v (text-to-video):** `input_mode: "text"`, prompts only, no video source
-- **v2v (video-to-video):** `input_mode: "video"`, video source + prompts, `noise_scale` controls blend
-- **i2v (image-to-video):** `input_mode: "video"`, single-frame image as video source, pipeline generates motion
-
-### Model Artifacts (for reference)
-
-```
-longlive:
-  ├─ daydreamlive/Wan2.1-T2V-1.3B          (~2.5GB)
-  ├─ daydreamlive/WanVideo_comfy            (~1.5GB)  UMT5 encoder + VACE
-  ├─ daydreamlive/Autoencoders              (~200MB)
-  └─ daydreamlive/LongLive-1.3B            (~2.5GB)
-
-video-depth-anything:
-  └─ daydreamlive/Video-Depth-Anything-Small (~50MB)
-
-rife:
-  └─ daydreamlive/RIFE                      (~30MB)
-```
-
-## Livepeer Cloud Mode
-
-### How Scope Connects to Livepeer
-
-Scope's local client connects to Livepeer via:
-1. `POST /api/v1/cloud/connect` with `app_id` pointing to the Livepeer gateway
-2. Scope internally establishes a WebSocket to the Livepeer orchestrator
-3. The orchestrator provisions a runner (GPU machine) with the Scope cloud image
-4. Media flows: local Scope → trickle channels → remote runner → trickle channels → local Scope
-5. All API calls (pipeline load, parameters, etc.) are proxied over the WS to the remote runner
-
-### Orchestrator Discovery
-
-Livepeer orchestrators are discoverable via the Livepeer network. The load test harness should:
-1. Query the discovery endpoint to enumerate available orchestrators
-2. Track which orchestrators have been tested (coverage map)
-3. Rotate through orchestrators fairly — equal test time budget per orchestrator
-4. Skip orchestrators that fail health checks or are unreachable
-
-### Key Environment Variables for Cloud Connect
-
-| Variable | Purpose |
-|----------|---------|
-| `LIVEPEER_TOKEN` | Base64-encoded JSON with signer/discovery URLs |
-| `SCOPE_CLOUD_APP_ID` | Cloud app identifier |
-| `SCOPE_CLOUD_API_KEY` | Cloud API key |
-
-## Load Test Design Constraints
-
-### Traffic Budget Model
-
-- **daily_percent:** Configurable (default 20%) — percentage of 24hrs each orchestrator is under test
-- **max_run_duration_mins:** 30 — hard cap per run, then release all resources
-- **Fair distribution:** Every reachable, healthy orchestrator gets equal test time
-- **Progressive coverage:** Don't test all orchestrators at once; rotate so the network can still serve real jobs
-- **Example:** 20% of 24hrs = 4.8hrs per orchestrator/day. With 30min runs = ~10 runs/orchestrator/day
-
-### Test Scenarios
-
-Cover all combinations of:
-- **Pipelines:** longlive, ltx2
-- **Modes:** t2v, v2v, i2v
-- **Duration:** short (1 min), mid (5 min), long (15 min)
-- **Graphs:** single pipeline, chained (longlive + rife), full chain (depth + longlive + rife)
-- **Prompts:** diversified from a prompt dataset (YAML), varied per scenario
-
-### Success Criteria
-
-| Category | Metric | Pass | Fail |
-|----------|--------|------|------|
-| **Connect** | Cloud connect time | < 120s | Timeout or rejection |
-| **Load** | Pipeline load time | Status "loaded" < 300s | Timeout or error |
-| **First frame** | Prompt to first frame | < 60s from stream start | No frame after 60s |
-| **Stability** | Stream FPS | fps_out > 0 for full duration | fps_out = 0 for > 10s |
-| **Shutdown** | Clean stop | Session stops, recording downloadable | Hang or error |
-| **Latency** | P50/P95/P99 prompt-to-first-frame | Track and alert on regression | > 20% degradation vs 7-day avg |
-| **Quality** | Frame not black/corrupt | Pixel variance > threshold | Black or zero-variance frame |
-| **Quality** | Frame dimensions | Match requested resolution | Mismatch |
-| **Quality** | Prompt sensitivity | Different prompts produce different frames (SSIM < threshold) | Identical output for different prompts |
-| **Resources** | VRAM usage | < 90% of total | OOM or > 90% |
-| **Resources** | VRAM leak | End VRAM ≈ start VRAM (within tolerance) | Monotonic VRAM growth |
-| **Recording** | Valid output | Non-zero MP4, duration matches expected | Zero-size, corrupt, or wrong duration |
-| **Network** | Connection stability | No unexpected disconnects during session | Disconnect mid-session |
-| **Network** | Frame delivery | frames_from_cloud > 0 and growing | Stuck at 0 or stalled |
-
-### Regression Detection
-
-- Compare each run's P50 latency and FPS against a 7-day rolling average
-- Auto-flag if > 20% degradation
-- For identical prompts + seeds, compare SSIM/PSNR of reference frames across runs
-- Track cold-start vs warm-start frequency per orchestrator
-
-### Error Taxonomy
-
-Classify every failure as one of:
-- **network:** timeout, disconnect, DNS failure
-- **orchestrator:** capacity rejection, routing error, provisioning failure
-- **runner:** OOM, CUDA error, pipeline crash, model load failure
-- **protocol:** malformed response, unexpected message type
-
-On failure, capture `GET /api/v1/logs/tail?lines=100` and store alongside the result for post-mortem. Don't store logs for passing sessions.
-
-## Repo Structure (Target)
-
-```
-scope-load-testing/
-├── CLAUDE.md                     # This file
-├── docker-compose.yml
-├── Dockerfile.harness
-├── pyproject.toml
-├── .env.example
-├── src/
-│   └── loadtest/
-│       ├── __init__.py
-│       ├── cli.py               # CLI entrypoint (run, schedule, discover, coverage, baselines)
-│       ├── config.py            # Load YAML config, validate, scenario matrix defs
-│       ├── scheduler.py         # Budget calculation, run timing, orchestrator rotation
-│       ├── discovery.py         # Livepeer orchestrator discovery + health check
-│       ├── coverage.py          # Track which orchestrators tested, persist state (pruned to 30 days)
-│       ├── executor.py          # Drive a single test scenario against a Scope instance
-│       ├── scenarios.py         # Scenario matrix expansion, session body builder
-│       ├── scope_client.py      # Async HTTP client for Scope API (typed)
-│       ├── metrics.py           # Prometheus metric definitions + push logic
-│       ├── validators.py        # Frame quality, prompt sensitivity (Pillow + numpy only)
-│       ├── results.py           # Result collection, error taxonomy, log capture
-│       └── regression.py        # Baseline comparison, drift detection
-├── config/
-│   ├── default.yaml             # Budget, thresholds, scenario matrix
-│   ├── graphs/                  # Graph templates (multi-pipeline only)
-│   │   ├── chain_longlive_rife.yaml
-│   │   └── chain_depth_longlive_rife.yaml
-│   └── prompts/
-│       ├── nature.yaml
-│       ├── urban.yaml
-│       ├── abstract.yaml
-│       └── stress.yaml
-├── videos/                      # Test input videos (generated, gitignored)
-├── scripts/
-│   └── generate_test_videos.py
-├── dashboards/
-│   └── grafana/
-│       └── scope-loadtest.json
-├── data/                        # gitignored, persistent volume
-├── docs/
-│   ├── design.md
-│   ├── plans/
-│   └── docker-optimization-plan.md
-└── tests/                       # One test file per module
-```
+**Key files on VM:**
+- `/opt/scope-load-testing/` — repo checkout
+- `/opt/scope-load-testing/data/` — persistent (coverage.json, baselines.json, failures/)
+- `/opt/scope-load-testing/docker-compose.override.yml` — Pulumi-managed env config
 
 ## Style Guidelines
 
-- Python 3.12+, type hints everywhere
-- Async-first (httpx.AsyncClient, asyncio)
-- No ML dependencies — only httpx, prometheus_client, pyyaml, Pillow, numpy, click
-- Config is YAML, code reads config — no hardcoded values for thresholds, URLs, or timing
-- All Scope API interactions go through `scope_client.py` — no raw HTTP calls elsewhere
-- Errors are classified by taxonomy (network/orchestrator/runner/protocol) before reporting
-- Standard Prometheus labels: `orchestrator_id`, `pipeline`, `mode` (extended labels on counters only)
-- Adding a new pipeline requires only config changes (scenario matrix entry + optional graph template), no code
+- Python 3.12+, type hints, async-first (httpx.AsyncClient)
+- No ML dependencies — httpx, prometheus_client, pyyaml, Pillow, numpy, click
+- Config is YAML, no hardcoded values
+- All SDK interactions through `sdk_client.py`
+- All Scope API interactions through `scope_client.py`
+- Errors classified by taxonomy before reporting
+- `client_source: "scope-loadtest"` on ALL events (ClickHouse filtering)
+- Adding a pipeline = config only, no code
 
-## Test Video Generation
+## Related repos and PRs
 
-If test videos need to be regenerated:
-```python
-import cv2
-import numpy as np
-
-def create_test_video(path, color, width=512, height=512, fps=30, duration_s=30):
-    w = cv2.VideoWriter(path, cv2.VideoWriter.fourcc(*'mp4v'), fps, (width, height))
-    frame = np.zeros((height, width, 3), dtype=np.uint8)
-    frame[:] = color
-    for _ in range(fps * duration_s):
-        w.write(frame)
-    w.release()
-```
-
-## Grafana Dashboard Panels (Target)
-
-1. **Overview:** Total runs, pass rate, active sessions, orchestrator count
-2. **Per-orchestrator:** Success rate, avg latency, FPS, coverage completeness
-3. **Per-pipeline:** Load time, first-frame latency, steady-state FPS by pipeline + mode
-4. **Latency Trends:** 7-day P50/P95 first-frame latency with baseline band
-5. **Errors:** Failure taxonomy breakdown (network/orchestrator/runner/protocol)
-6. **Budget & Coverage:** Daily test budget consumed vs planned, per orchestrator
-
-## v1 vs v2 Scope
-
-Features deferred to v2 (not in current implementation):
-- Recording download and MP4 validation
-- Model consistency (reference frame SSIM across runs)
-- Orchestrator routing fairness detection
-- scikit-image dependency (using Pillow pixel diff instead)
+| Repo | PR | Status | What |
+|------|----|--------|------|
+| `daydreamlive/scope` | #1040 | Deployed to scope-1/vast-1 | Trickle telemetry from runner |
+| `livepeer/pipelines` | #2691 | Deployed to staging, NOT production | `/v1/metrics` endpoint |
+| `livepeer/simple-infra` | #36 | Merged | VM provisioning via Pulumi |
