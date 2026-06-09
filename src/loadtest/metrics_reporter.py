@@ -179,7 +179,7 @@ def build_run_events(
         completed_data["error_category"] = result.error_category.value if result.error_category else None
         completed_data["error_message"] = result.error_message
 
-    # Add trickle channel metrics if available
+    # Add trickle channel metrics summary
     trickle = result.labels.get("_trickle_metrics")
     if trickle and hasattr(trickle, "all_events"):
         completed_data["trickle_events_count"] = len(trickle.all_events)
@@ -188,13 +188,36 @@ def build_run_events(
         completed_data["trickle_pipeline_loaded"] = trickle.pipeline_loaded
         if trickle.latest_media_stats:
             completed_data["media_stats"] = trickle.latest_media_stats
-        if trickle.telemetry_events:
-            completed_data["runtime_telemetry"] = trickle.telemetry_events[:5]  # cap at 5
 
     events.append({
         "type": "loadtest_run_completed",
         "timestamp": _ts(),
         "data": completed_data,
     })
+
+    # Forward runner telemetry events verbatim (PR daydreamlive/scope#1040).
+    # These are the actual stream_trace envelopes from the Scope runtime
+    # (stream_heartbeat, stream_started, stream_stopped, error, etc.)
+    # relayed over the trickle events channel. We re-publish them as-is
+    # so they appear in network_events exactly like production Scope events,
+    # but with client_source="scope" (the runner's original tag) plus
+    # relayed_via="loadtest" added by us for filtering.
+    if trickle and hasattr(trickle, "telemetry_events"):
+        for telemetry_event in trickle.telemetry_events:
+            # The telemetry_event is the full envelope from build_event_envelope():
+            # {id, type: "stream_trace", timestamp, data: {type: "stream_heartbeat", ...}}
+            # Tag it so ClickHouse can distinguish load-test-relayed events
+            forwarded = dict(telemetry_event)
+            if isinstance(forwarded.get("data"), dict):
+                forwarded["data"] = dict(forwarded["data"])
+                forwarded["data"]["relayed_via"] = "loadtest"
+            # Use the envelope's type (stream_trace) so it matches
+            # the ClickHouse schema and existing consumers
+            events.append({
+                "type": forwarded.get("type", "stream_trace"),
+                "id": forwarded.get("id"),
+                "timestamp": forwarded.get("timestamp"),
+                "data": forwarded.get("data"),
+            })
 
     return events
